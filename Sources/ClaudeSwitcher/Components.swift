@@ -277,10 +277,9 @@ struct UsageFooter: View {
                     Label("Cập nhật", systemImage: "arrow.clockwise").font(.caption)
                 }
                 .buttonStyle(.borderless)
-                .disabled(store.busy)
                 .help(account.id == store.state.activeId
                       ? "Đọc lại usage"
-                      : "Tạm chuyển sang tài khoản này vài giây để đọc usage, rồi chuyển lại")
+                      : "Đọc usage trong hồ sơ riêng của tài khoản này — không đổi tài khoản đang dùng")
             }
         }
     }

@@ -27,16 +27,24 @@ App lưu bản sao của từng tài khoản trong Keychain (dịch vụ `Claude
   - Có login mới qua `claude auth login` thì app tự thêm tài khoản đó.
   - Một phiên cũ ghi đè lại token của tài khoản khác thì app giữ token đó cho đúng tài khoản rồi đặt lại tài khoản đang chọn.
 - **Token dự phòng:** token tạo bằng `claude setup-token` sống khoảng 1 năm. Khi login của tài khoản đang dùng hết hạn (hoặc bật "Luôn dùng token dự phòng"), app ghi token này vào `~/.claude/settings.json` ở `env.CLAUDE_CODE_OAUTH_TOKEN`. Khi login dùng được lại, app gỡ token ra. Token này có thể không hỗ trợ một số tính năng gắn với claude.ai.
-- **Tự gia hạn hằng ngày:** mọi tài khoản đã đăng nhập, kể cả tài khoản đang dùng, được gia hạn ít nhất 1 lần mỗi 24 giờ. Mỗi lần Claude Code làm mới token, hạn login được đẩy thêm khoảng 30 ngày, nên login không hết hạn. Gia hạn chỉ chạy khi access token (sống khoảng 8 giờ) đã hết hạn, vì Claude Code chỉ làm mới lúc đó. Lượt nào Claude Code đã tự làm mới trong ngày thì app bỏ qua. Cách làm: tạm chuyển sang tài khoản vài giây, chạy `/usage` (miễn phí). Nếu token vẫn chưa đổi thì gửi `claude -p "Reply with OK" --model haiku`. Sau đó chuyển lại.
+- **Tự gia hạn hằng ngày:** mọi tài khoản đã đăng nhập, kể cả tài khoản đang dùng, được gia hạn ít nhất 1 lần mỗi 24 giờ. Mỗi lần Claude Code làm mới token, hạn login được đẩy thêm khoảng 30 ngày. Gia hạn chỉ chạy khi access token (sống khoảng 8 giờ) đã hết hạn. Lượt nào Claude Code đã tự làm mới trong ngày thì app bỏ qua. Cách làm: chạy `/usage` (miễn phí), nếu token chưa đổi thì gửi `claude -p "Reply with OK" --model haiku`.
 
 ## Usage
 
 App đọc usage bằng `claude -p /usage --no-session-persistence`. Đây là lệnh chạy cục bộ: không tốn lượt chat và không lưu lịch sử phiên.
 
 - **Tài khoản đang dùng:** khi mở panel hoặc cửa sổ thì đọc lại nếu số liệu cũ hơn 60 giây (mỗi 3 phút khi cửa sổ vẫn mở), và ngay sau khi chuyển tài khoản. Khi chạy ngầm thì 15 phút một lần, ở mức ưu tiên thấp, vì mỗi lần tốn khoảng 6 giây CPU.
-- **Tài khoản khác:** hiện lần đọc gần nhất. Phần nào đã qua giờ reset thì tính về 0%. Nút ↻ tạm chuyển sang tài khoản đó vài giây để đọc rồi chuyển lại. Lần tự làm mới login cũng đọc luôn usage.
+- **Tài khoản khác:** hiện lần đọc gần nhất. Phần nào đã qua giờ reset thì tính về 0%. Nút ↻ đọc lại trong hồ sơ riêng của tài khoản đó (xem dưới). Lần gia hạn hằng ngày cũng đọc luôn usage.
 - **Gợi ý chuyển tài khoản:** khi tài khoản đang dùng đã dùng từ 80% trở lên, panel gợi ý tài khoản còn nhiều hạn mức nhất.
 - Token dự phòng không đọc được usage của gói, vì nó không có quyền đọc hồ sơ tài khoản.
+
+## Hồ sơ riêng: không đổi tài khoản đang dùng
+
+Đọc usage và gia hạn **không bao giờ chuyển login đang dùng**, nên các phiên agent đang chạy không bị gián đoạn.
+
+- **Tài khoản không dùng:** chạy trong hồ sơ riêng `~/Library/Application Support/ClaudeSwitcher/profiles/<id>/`, bằng `CLAUDE_CONFIG_DIR`. Với biến này, Claude Code dùng mục Keychain riêng `Claude Code-credentials-<8 ký tự hex đầu của sha256(đường dẫn)>`. App chép login mới nhất vào hồ sơ trước khi chạy, và lưu ngược token Claude Code đã đổi sau khi chạy.
+- **Tài khoản đang dùng:** chạy thẳng trên login hiện tại, giống như mở thêm một phiên của chính tài khoản đó. App không bao giờ chạy hồ sơ riêng cho tài khoản này, vì như vậy sẽ đổi refresh token mà các phiên đang mở đang giữ. Trường hợp ngoại lệ: khi tài khoản này đang chạy bằng token dự phòng thì vẫn dùng hồ sơ riêng.
+- Bấm Chuyển sang một tài khoản đúng lúc hồ sơ của nó đang chạy thì app chờ chạy xong rồi mới chuyển, để không mất token vừa đổi.
 
 ## Thêm tài khoản
 

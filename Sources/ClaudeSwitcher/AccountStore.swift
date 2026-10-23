@@ -33,7 +33,8 @@ final class AccountStore {
 
     private(set) var state = AppState()
     private(set) var banner: Banner?
-    private(set) var busy = false
+    /// Accounts being renewed right now.
+    private(set) var renewingIds: Set<String> = []
     /// Set while a `claude auth login` is pending; cleared when the new login shows up.
     private(set) var addingSince: Date?
     /// claude processes that were running at the last switch and still hold the old account.
@@ -131,7 +132,7 @@ final class AccountStore {
     func viewDisappeared() { visibleViews = max(0, visibleViews - 1) }
 
     func tick(force: Bool = false) {
-        guard !ticking, !busy else { return }
+        guard !ticking else { return }
         let fast = visibleViews > 0 || addingSince != nil || !staleSessions.isEmpty
         guard force || -lastSync.timeIntervalSinceNow >= (fast ? 2.5 : 15) else { return }
         ticking = true
@@ -300,7 +301,13 @@ final class AccountStore {
     }
 
     @discardableResult
-    private func switchLocked(_ id: String, quiet: Bool, forceLogin: Bool = false) async -> Bool {
+    private func switchLocked(_ id: String, quiet: Bool) async -> Bool {
+        // A run in this account's profile may be rotating its tokens; let it
+        // finish and hand them back before they go live.
+        let deadline = Date().addingTimeInterval(200)
+        while profileRunning.contains(id), Date() < deadline {
+            try? await Task.sleep(for: .milliseconds(200))
+        }
         await syncLocked()
         guard let acc = account(id) else { return false }
         if !acc.loginUsable && !acc.hasSetupToken {
@@ -322,7 +329,7 @@ final class AccountStore {
         do {
             let data = acc.oauthAccount
             try await ioThrowing { try ClaudeFiles.setOauthAccount(data) }
-            try await applyEnvMode(for: acc, forceLogin: forceLogin)
+            try await applyEnvMode(for: acc)
         } catch {
             announce(error.localizedDescription, kind: .error)
             return false
@@ -352,8 +359,8 @@ final class AccountStore {
 
     /// settings.json carries the setup-token only while the login can't be used
     /// (or the account is set to always use it).
-    private func applyEnvMode(for acc: Account, forceLogin: Bool = false) async throws {
-        let wantSetup = !forceLogin && (acc.preferSetupToken || !acc.loginUsable)
+    private func applyEnvMode(for acc: Account) async throws {
+        let wantSetup = acc.preferSetupToken || !acc.loginUsable
         if wantSetup, let token = await setupToken(acc.id) {
             try await ioThrowing { try ClaudeFiles.setEnvToken(token) }
             setActiveUsesSetupToken(true)
@@ -397,6 +404,8 @@ final class AccountStore {
     /// access token that is still valid means one happened within its ~8 h life.
     static let renewInterval: TimeInterval = 24 * 3600
     @ObservationIgnored private var renewing = false
+    /// Accounts with a claude run in their profile right now.
+    @ObservationIgnored private var profileRunning: Set<String> = []
 
     func renewDue(_ acc: Account, now: Date = Date()) -> Bool {
         guard acc.loginUsable, acc.hasLogin else { return false }
@@ -412,96 +421,133 @@ final class AccountStore {
         return max(afterLast, acc.accessTokenExpiresAt ?? .distantPast)
     }
 
-    /// Called from inside a tick, so it queues the renewal instead of awaiting it;
+    /// Called from inside a tick, so it starts the renewal instead of awaiting it;
     /// one account per tick, the next one a minute later.
     private func keepAliveIfDue() {
         guard !renewing, let due = state.accounts.first(where: { renewDue($0) }) else { return }
         renewing = true
         Task {
-            await serial { await self.refreshLoginLocked(due.id, manual: false) }
+            await renew(due.id, manual: false)
             renewing = false
         }
     }
 
     func refreshLogin(_ id: String) async {
-        await serial { await self.refreshLoginLocked(id, manual: true) }
+        await renew(id, manual: true)
     }
 
-    /// Lets Claude Code itself refresh an account while it is live: first `/usage`
-    /// (free; Claude Code refreshes an expired token before calling the API), and
-    /// only if the tokens didn't change, one tiny haiku message.
-    private func refreshLoginLocked(_ id: String, manual: Bool) async {
-        guard let acc = account(id), acc.loginUsable else { return }
+    /// Lets Claude Code itself refresh an account: first `/usage` (free; Claude
+    /// Code refreshes an expired token before calling the API), and only if the
+    /// tokens didn't change, one tiny haiku message. Nothing is switched: an idle
+    /// account runs in its own profile, the active one on the live login (just
+    /// one more session of the same account).
+    private func renew(_ id: String, manual: Bool) async {
+        guard let acc = account(id), acc.loginUsable, !renewingIds.contains(id) else { return }
         if let exp = acc.accessTokenExpiresAt, exp > Date() {
             if manual {
                 announce("\(acc.title): token còn hạn đến \(Fmt.reset(exp)). Claude Code chỉ làm mới khi token hết hạn, nên chưa cần làm gì.", kind: .info)
             }
             return
         }
+        renewingIds.insert(id)
+        defer { renewingIds.remove(id) }
         let before = acc.refreshTokenExpiresAt
-        // Right after launch savedRaw is empty; compare against the stored copy.
-        let beforeRaw: String?
-        if let cached = savedRaw[id] { beforeRaw = cached } else { beforeRaw = await io { Keychain.storedLogin(id) } }
-        var usage: UsageSnapshot?
-        var ping: ShellResult?
-        let ran = await withTemporarilyActiveLocked(id) {
-            self.usageLoading.insert(id)
-            usage = await self.fetchLiveUsage()
-            self.usageLoading.remove(id)
-            let live = await io { Keychain.readClaudeLogin() }
-            if live == beforeRaw {
-                ping = await self.runClaude(["-p", "Reply with OK", "--model", "haiku", "--max-turns", "1"], timeout: 180)
-            }
-        }
-        guard ran else { return }
-        let renewed = savedRaw[id] != beforeRaw
+        let result = usesLiveLogin(id) ? await runOnLiveLogin(id, ping: true) : await runInProfile(id, ping: true)
+
         update(id) {
-            if renewed { $0.lastKeepAliveAt = Date() }
-            if let usage { $0.usage = usage }
+            if result.renewed { $0.lastKeepAliveAt = Date() }
+            if let usage = result.usage { $0.usage = usage }
         }
         save()
-
         let after = account(id)?.refreshTokenExpiresAt
-        if renewed {
+        if result.renewed {
             if manual {
                 announce("Đã gia hạn \(acc.title): hạn login \(Fmt.date(before)) → \(Fmt.date(after)).", kind: .success)
             }
         } else {
-            let why = ((ping?.stderr ?? "") + (ping?.stdout ?? "")).trimmingCharacters(in: .whitespacesAndNewlines).prefix(160)
+            let why = result.error.trimmingCharacters(in: .whitespacesAndNewlines).prefix(160)
             let text = "Không gia hạn được \(acc.title)" + (why.isEmpty ? "." : ": \(why)")
             if manual { announce(text, kind: .error) } else { notifyOnce("renew-fail-\(id)", text) }
         }
     }
 
-    /// Makes an idle account the live login for a few seconds, runs `work`, keeps
-    /// whatever tokens Claude Code rotated, and switches back.
-    private func withTemporarilyActiveLocked(_ id: String, _ work: () async -> Void) async -> Bool {
-        guard !busy else { return false }
-        busy = true
-        defer { busy = false }
-        // A background /usage read of the active account must finish first, or
-        // its numbers could land on the wrong account.
-        let deadline = Date().addingTimeInterval(70)
-        while !usageLoading.isEmpty, Date() < deadline {
-            try? await Task.sleep(for: .milliseconds(200))
-        }
-        let previous = state.activeId
-        guard await switchLocked(id, quiet: true, forceLogin: true) else { return false }
-        await work()
-        await syncLocked()
-        // Also when previous == id: forceLogin may have lifted a setup-token
-        // from settings.json, and switching back restores it.
-        if let previous { await switchLocked(previous, quiet: true) }
-        save()
-        return true
+    /// Only the active account in regular-login mode runs on the live login. A
+    /// profile run for it would rotate the refresh token the open sessions hold.
+    private func usesLiveLogin(_ id: String) -> Bool {
+        id == state.activeId && !state.activeUsesSetupToken
     }
 
-    /// Runs the claude CLI against the live login (never a setup-token from the
-    /// environment), without saving a session transcript, at low priority.
-    private func runClaude(_ args: [String], timeout: TimeInterval) async -> ShellResult? {
+    private struct RunResult {
+        var usage: UsageSnapshot?
+        var renewed = false
+        var error = ""
+    }
+
+    /// The live login is this account, so this is just one more session of it.
+    private func runOnLiveLogin(_ id: String, ping: Bool) async -> RunResult {
+        var result = RunResult()
+        let before = await io { Keychain.readClaudeLogin() }
+        usageLoading.insert(id)
+        result.usage = await fetchUsage(configDir: nil)
+        usageLoading.remove(id)
+        var live = await io { Keychain.readClaudeLogin() }
+        if ping, live == before {
+            let r = await runClaude(Self.pingArgs, configDir: nil, timeout: 180)
+            result.error = (r?.stderr ?? "") + (r?.stdout ?? "")
+            live = await io { Keychain.readClaudeLogin() }
+        }
+        result.renewed = live != nil && live != before
+        if result.renewed { await serial { await self.syncLocked() } }   // keeps the rotated tokens
+        return result
+    }
+
+    /// Runs as an idle account in its own config dir and keychain item: the live
+    /// login and the sessions using it are never touched. The stored login goes
+    /// in first; whatever Claude Code rotated comes back out.
+    private func runInProfile(_ id: String, ping: Bool) async -> RunResult {
+        var result = RunResult()
+        guard let acc = account(id) else { return result }
+        profileRunning.insert(id)
+        usageLoading.insert(id)
+        defer {
+            profileRunning.remove(id)
+            usageLoading.remove(id)
+        }
+        let oauthAccount = acc.oauthAccount
+        let prepared = await io { () -> (dir: URL, login: String)? in
+            guard let raw = Keychain.storedLogin(id), let dir = Profile.prepare(id, login: raw, oauthAccount: oauthAccount) else { return nil }
+            return (dir, raw)
+        }
+        guard let prepared else {
+            result.error = "không chuẩn bị được hồ sơ riêng"
+            return result
+        }
+        result.usage = await fetchUsage(configDir: prepared.dir)
+        var after = await io { Profile.login(id) }
+        if ping, after == prepared.login {
+            let r = await runClaude(Self.pingArgs, configDir: prepared.dir, timeout: 180)
+            result.error = (r?.stderr ?? "") + (r?.stdout ?? "")
+            after = await io { Profile.login(id) }
+        }
+        if let after, after != prepared.login, let blob = LoginBlob(raw: after) {
+            result.renewed = true
+            // Not through `serial`: a switch to this account holds the queue while
+            // it waits for this run, and must find the rotated tokens stored.
+            await storeLogin(blob, for: id, oauthAccount: nil)
+        }
+        return result
+    }
+
+    private static let pingArgs = ["-p", "Reply with OK", "--model", "haiku", "--max-turns", "1"]
+
+    /// Runs the claude CLI without saving a session transcript, at low priority:
+    /// on the live login (never a setup-token from the environment), or as an
+    /// idle account when given its profile dir.
+    private func runClaude(_ args: [String], configDir: URL?, timeout: TimeInterval) async -> ShellResult? {
         guard let claude = Self.claudePath else { return nil }
         var env = ProcessInfo.processInfo.environment
         for key in [ClaudeFiles.envKey, "CLAUDE_CONFIG_DIR", "ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN"] { env[key] = nil }
+        if let configDir { env["CLAUDE_CONFIG_DIR"] = configDir.path }
         let runEnv = env
         let home = FileManager.default.homeDirectoryForCurrentUser
         return await Task.detached(priority: .utility) {
@@ -512,10 +558,11 @@ final class AccountStore {
 
     // MARK: Usage
 
-    /// `/usage` is a local command: no model turn, nothing billed. It reads the
-    /// plan limits of the live login; a setup-token can't (no profile scope).
-    private func fetchLiveUsage() async -> UsageSnapshot? {
-        guard let r = await runClaude(["-p", "/usage", "--output-format", "json"], timeout: 60), r.status == 0 else { return nil }
+    /// `/usage` is a local command: no model turn, nothing billed. It needs a
+    /// regular login (a setup-token has no profile scope).
+    private func fetchUsage(configDir: URL?) async -> UsageSnapshot? {
+        guard let r = await runClaude(["-p", "/usage", "--output-format", "json"], configDir: configDir, timeout: 60),
+              r.status == 0 else { return nil }
         let out = r.stdout
         return await io {
             guard let obj = (try? JSONSerialization.jsonObject(with: Data(out.utf8))) as? [String: Any],
@@ -524,52 +571,46 @@ final class AccountStore {
         }
     }
 
-    func canReadUsage(_ acc: Account) -> Bool {
-        acc.loginUsable && !(acc.id == state.activeId && state.activeUsesSetupToken)
-    }
+    func canReadUsage(_ acc: Account) -> Bool { acc.loginUsable }
 
-    /// The active account's usage when the last read is older than `maxAge`. Not
-    /// serialized: it only reads, and drops the result if the account changed.
+    /// The active account's usage when the last read is older than `maxAge`.
     func refreshActiveUsage(maxAge: TimeInterval = 180) {
-        guard let acc = active, canReadUsage(acc), !busy, !usageLoading.contains(acc.id) else { return }
+        guard let acc = active, canReadUsage(acc), !usageLoading.contains(acc.id), !renewingIds.contains(acc.id) else { return }
         if let u = acc.usage, -u.fetchedAt.timeIntervalSinceNow < maxAge { return }
-        usageLoading.insert(acc.id)
-        Task {
-            let snap = await fetchLiveUsage()
-            usageLoading.remove(acc.id)
-            guard let snap, state.activeId == acc.id else { return }
-            update(acc.id) { $0.usage = snap }
-            save()
-        }
+        Task { await readUsage(acc.id) }
     }
 
-    /// Any account's usage; an idle one is made live for a few seconds to read it.
+    /// Any account's usage, without switching anything.
     func refreshUsage(_ id: String) async {
-        guard let acc = account(id) else { return }
+        guard let acc = account(id), !usageLoading.contains(id) else { return }
         guard canReadUsage(acc) else {
             return announce("\(acc.title): cần login thường còn hạn để đọc usage.", kind: .warning)
         }
-        if id == state.activeId { return refreshActiveUsage(maxAge: 0) }
-        await serial {
-            var snap: UsageSnapshot?
-            let ran = await self.withTemporarilyActiveLocked(id) {
-                self.usageLoading.insert(id)
-                snap = await self.fetchLiveUsage()
-                self.usageLoading.remove(id)
-            }
-            guard ran else { return }
-            if let snap {
-                self.update(id) { $0.usage = snap }
-                self.save()
-            } else {
-                self.announce("Không đọc được usage của \(acc.title).", kind: .error)
-            }
+        await readUsage(id, reportFailure: true)
+    }
+
+    private func readUsage(_ id: String, reportFailure: Bool = false) async {
+        let live = usesLiveLogin(id)
+        let result = live ? await runOnLiveLogin(id, ping: false) : await runInProfile(id, ping: false)
+        // A live read belongs to whoever was live when it started; drop it if
+        // the user switched meanwhile.
+        if live, state.activeId != id { return }
+        guard let usage = result.usage else {
+            if reportFailure { announce("Không đọc được usage của \(account(id)?.title ?? "").", kind: .error) }
+            return
         }
+        update(id) {
+            $0.usage = usage
+            if result.renewed { $0.lastKeepAliveAt = Date() }
+        }
+        save()
     }
 
     func refreshAllUsage() async {
-        for acc in state.accounts where canReadUsage(acc) {
-            await refreshUsage(acc.id)
+        await withTaskGroup(of: Void.self) { group in
+            for acc in state.accounts where canReadUsage(acc) {
+                group.addTask { await self.refreshUsage(acc.id) }
+            }
         }
     }
 
@@ -771,7 +812,12 @@ final class AccountStore {
         setupTokens[id] = nil
         state.accounts.removeAll { $0.id == id }
         save()
-        Task { await io { Keychain.forget(id) } }
+        Task {
+            await io {
+                Keychain.forget(id)
+                Profile.remove(id)
+            }
+        }
     }
 
     func setLaunchAtLogin(_ on: Bool) {

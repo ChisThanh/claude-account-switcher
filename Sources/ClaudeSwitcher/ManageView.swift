@@ -147,7 +147,7 @@ struct AccountDetail: View {
                 Card(title: "Usage", icon: "chart.bar.fill") {
                     UsageDetail(account: account)
                     if !isActive {
-                        Text("Số liệu của tài khoản không dùng là lần đọc gần nhất. Cập nhật = tạm chuyển sang tài khoản này vài giây để đọc rồi chuyển lại, không tốn lượt chat.")
+                        Text("Số liệu của tài khoản không dùng là lần đọc gần nhất. Cập nhật chạy trong hồ sơ riêng của tài khoản này: không đổi tài khoản đang dùng, không làm gián đoạn phiên claude nào, không tốn lượt chat.")
                             .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
                     }
                 }
@@ -202,7 +202,7 @@ struct AccountDetail: View {
             } else {
                 Button("Dùng tài khoản này") { store.switchTo(account.id) }
                     .buttonStyle(.borderedProminent).controlSize(.large)
-                    .disabled(store.busy || store.health(account).level == .expired)
+                    .disabled(store.health(account).level == .expired)
             }
         }
     }
@@ -234,10 +234,10 @@ struct AccountDetail: View {
                 if health.level == .expired || !account.loginUsable {
                     AddAccountMenu(email: account.email) { Text("Đăng nhập lại") }.fixedSize()
                 } else {
-                    Button(store.busy ? "Đang gia hạn…" : "Gia hạn ngay") {
+                    Button(store.renewingIds.contains(account.id) ? "Đang gia hạn…" : "Gia hạn ngay") {
                         Task { await store.refreshLogin(account.id) }
                     }
-                    .disabled(store.busy)
+                    .disabled(store.renewingIds.contains(account.id))
                 }
                 Spacer()
             }
@@ -252,7 +252,7 @@ struct AccountDetail: View {
             }
             return isActive
                 ? "App gia hạn mọi tài khoản ít nhất 1 lần mỗi ngày, kể cả tài khoản đang dùng. Mỗi lần gia hạn đẩy hạn login thêm khoảng 30 ngày. Lượt nào Claude Code đã tự làm mới thì app bỏ qua."
-                : "App gia hạn mọi tài khoản ít nhất 1 lần mỗi ngày: tạm chuyển sang tài khoản này vài giây, đọc /usage (miễn phí) để Claude Code lấy token mới, rồi chuyển lại. Chỉ khi cách đó không đổi được token mới gửi 1 câu rất nhỏ bằng haiku."
+                : "App gia hạn mọi tài khoản ít nhất 1 lần mỗi ngày trong hồ sơ riêng của tài khoản này, không đổi tài khoản đang dùng: đọc /usage (miễn phí) để Claude Code lấy token mới. Chỉ khi cách đó không đổi được token mới gửi 1 câu rất nhỏ bằng haiku."
         case .backup:
             return "Login thường đã hết hạn hoặc đang tắt, claude dùng token dự phòng. Đăng nhập lại để có đủ tính năng."
         case .expired:

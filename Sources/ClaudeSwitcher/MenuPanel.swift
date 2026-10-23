@@ -33,7 +33,6 @@ struct MenuPanel: View {
                     Spacer(minLength: 0)
                     Button("Chuyển") { store.switchTo(tip.account.id) }
                         .controlSize(.small).buttonStyle(.borderedProminent)
-                        .disabled(store.busy)
                 }
                 .padding(10)
                 .background(RoundedRectangle(cornerRadius: 8).fill(Color.yellow.opacity(0.12)))
@@ -149,8 +148,7 @@ struct AccountRow: View {
                     Image(systemName: "arrow.clockwise")
                 }
                 .buttonStyle(.borderless)
-                .disabled(store.busy)
-                .help("Cập nhật usage (tạm chuyển sang tài khoản này vài giây)")
+                .help("Cập nhật usage — chạy trong hồ sơ riêng, không đổi tài khoản đang dùng")
             }
             if health.level == .expired {
                 AddAccountMenu(email: account.email) { Text("Đăng nhập lại") }.fixedSize()
@@ -158,7 +156,6 @@ struct AccountRow: View {
             } else {
                 Button("Chuyển") { store.switchTo(account.id) }
                     .controlSize(.small)
-                    .disabled(store.busy)
             }
         }
         .padding(.horizontal, 8).padding(.vertical, 6)
