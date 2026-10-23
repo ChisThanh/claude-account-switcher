@@ -25,6 +25,20 @@ struct MenuPanel: View {
                 emptyState
             }
 
+            if let tip = store.suggestion() {
+                HStack(alignment: .top, spacing: 8) {
+                    Image(systemName: "lightbulb.fill").foregroundStyle(.yellow)
+                    Text("Tài khoản đang dùng đã dùng \(store.active?.usage?.load ?? 0)%. \(tip.account.title) mới dùng \(tip.load)%.")
+                        .font(.callout).fixedSize(horizontal: false, vertical: true)
+                    Spacer(minLength: 0)
+                    Button("Chuyển") { store.switchTo(tip.account.id) }
+                        .controlSize(.small).buttonStyle(.borderedProminent)
+                        .disabled(store.busy)
+                }
+                .padding(10)
+                .background(RoundedRectangle(cornerRadius: 8).fill(Color.yellow.opacity(0.12)))
+            }
+
             if !others.isEmpty {
                 Text("CHUYỂN SANG").font(.caption2.weight(.semibold)).foregroundStyle(.secondary)
                 VStack(spacing: 2) {
@@ -48,7 +62,8 @@ struct MenuPanel: View {
             }
         }
         .padding(14)
-        .frame(width: 360)
+        .frame(width: 380)
+        .onAppear { store.refreshActiveUsage(maxAge: 60) }
     }
 
     private var header: some View {
@@ -77,6 +92,8 @@ struct MenuPanel: View {
                 }
                 Spacer(minLength: 0)
             }
+            Divider()
+            UsageDetail(account: acc)
             if !acc.hasSetupToken {
                 Button {
                     dismiss()
@@ -117,8 +134,19 @@ struct AccountRow: View {
                     PlanPill(plan: account.subscriptionType)
                 }
                 HealthLine(level: health.level, text: health.text)
+                UsageCompact(account: account)
             }
             Spacer(minLength: 0)
+            if store.canReadUsage(account), !store.usageLoading.contains(account.id) {
+                Button {
+                    Task { await store.refreshUsage(account.id) }
+                } label: {
+                    Image(systemName: "arrow.clockwise")
+                }
+                .buttonStyle(.borderless)
+                .disabled(store.busy)
+                .help("Cập nhật usage (tạm chuyển sang tài khoản này vài giây)")
+            }
             if health.level == .expired {
                 Button("Đăng nhập lại") { store.addAccount(email: account.email) }
                     .controlSize(.small)
@@ -146,6 +174,7 @@ struct SettingsMenu: View {
                 get: { store.launchAtLogin },
                 set: { store.setLaunchAtLogin($0) }))
             Divider()
+            Button("Cập nhật usage mọi tài khoản") { Task { await store.refreshAllUsage() } }
             Button("Đồng bộ ngay") { store.tick(force: true) }
             Button("Thoát Claude Switcher") { NSApp.terminate(nil) }
         } label: {

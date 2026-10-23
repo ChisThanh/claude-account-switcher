@@ -29,6 +29,15 @@ App lưu bản sao của từng tài khoản trong Keychain (dịch vụ `Claude
 - **Token dự phòng:** token tạo bằng `claude setup-token` sống khoảng 1 năm. Khi login của tài khoản đang dùng hết hạn (hoặc bật "Luôn dùng token dự phòng"), app ghi token này vào `~/.claude/settings.json` ở `env.CLAUDE_CODE_OAUTH_TOKEN`. Khi login dùng được lại, app gỡ token ra. Token này có thể không hỗ trợ một số tính năng gắn với claude.ai.
 - **Tự làm mới:** khi một tài khoản không dùng còn dưới 5 ngày login, app tạm chuyển sang tài khoản đó, chạy `claude -p "Reply with OK" --model haiku` để Claude Code tự lấy token mới, rồi chuyển lại. Mỗi tài khoản làm tối đa một lần mỗi 20 giờ.
 
+## Usage
+
+App đọc usage bằng `claude -p /usage --no-session-persistence`. Đây là lệnh chạy cục bộ: không tốn lượt chat và không lưu lịch sử phiên.
+
+- **Tài khoản đang dùng:** đọc lại mỗi 3 phút, khi mở panel và ngay sau khi chuyển tài khoản.
+- **Tài khoản khác:** hiện lần đọc gần nhất. Phần nào đã qua giờ reset thì tính về 0%. Nút ↻ tạm chuyển sang tài khoản đó vài giây để đọc rồi chuyển lại. Lần tự làm mới login cũng đọc luôn usage.
+- **Gợi ý chuyển tài khoản:** khi tài khoản đang dùng đã dùng từ 80% trở lên, panel gợi ý tài khoản còn nhiều hạn mức nhất.
+- Token dự phòng không đọc được usage của gói, vì nó không có quyền đọc hồ sơ tài khoản.
+
 ## Thêm tài khoản
 
 1. Menu → **Thêm tài khoản…** mở Terminal với lệnh `claude auth login`. Đăng nhập tài khoản mới trên trình duyệt.

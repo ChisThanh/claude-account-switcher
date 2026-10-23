@@ -20,6 +20,8 @@ final class AccountStore: ObservableObject {
     @Published private(set) var addingSince: Date?
     /// claude processes that were running at the last switch and still hold the old account.
     @Published private(set) var staleSessions: Set<Int32> = []
+    /// Accounts whose usage is being read right now.
+    @Published private(set) var usageLoading: Set<String> = []
 
     /// Idle accounts whose login expires within this window get refreshed.
     static let keepAliveWindow: TimeInterval = 5 * 86400
@@ -69,6 +71,7 @@ final class AccountStore: ObservableObject {
         sync()
         if !staleSessions.isEmpty { staleSessions.formIntersection(Self.runningClaudePids()) }
         if let since = addingSince, -since.timeIntervalSinceNow > 15 * 60 { addingSince = nil }
+        refreshActiveUsage()
         guard force || -lastHealthCheck.timeIntervalSinceNow >= 60 else { return }
         lastHealthCheck = Date()
         checkHealth()
@@ -219,6 +222,7 @@ final class AccountStore: ObservableObject {
             staleSessions = Self.runningClaudePids()
             let mode = state.activeUsesSetupToken ? " bằng token dự phòng" : ""
             announce("Đã chuyển sang \(acc.title)\(mode).", kind: .success)
+            refreshActiveUsage(maxAge: 0)
         }
         return true
     }
@@ -272,41 +276,131 @@ final class AccountStore: ObservableObject {
         if let due { Task { await refreshLogin(due.id) } }
     }
 
-    /// Lets Claude Code itself refresh an idle account: briefly makes it the live
-    /// login, runs one tiny `claude -p`, keeps the rotated tokens, switches back.
+    /// Lets Claude Code itself refresh an idle account: runs one tiny `claude -p`
+    /// while it is live, keeps the rotated tokens, and reads its usage meanwhile.
     func refreshLogin(_ id: String) async {
-        guard !busy, let acc = account(id) else { return }
-        guard let claude = Self.claudePath else {
-            announce("Không tìm thấy lệnh claude", kind: .error)
-            return
+        guard let acc = account(id) else { return }
+        let before = acc.refreshTokenExpiresAt
+        var result: ShellResult?
+        var usage: UsageSnapshot?
+        let ran = await withTemporarilyActive(id) {
+            result = await self.runClaude(["-p", "Reply with OK", "--model", "haiku", "--max-turns", "1"], timeout: 180)
+            if result?.status == 0 { usage = await self.fetchLiveUsage() }
         }
+        guard ran else { return }
+        update(id) {
+            $0.lastKeepAliveAt = Date()
+            if let usage { $0.usage = usage }
+        }
+        save()
+
+        if let result, result.status == 0 {
+            let after = account(id)?.refreshTokenExpiresAt
+            announce("Đã làm mới \(acc.email): hạn login \(Fmt.date(before)) → \(Fmt.date(after))", kind: .success)
+        } else {
+            let why = ((result?.stderr ?? "") + (result?.stdout ?? "Không tìm thấy lệnh claude"))
+                .trimmingCharacters(in: .whitespacesAndNewlines).prefix(200)
+            announce("Làm mới \(acc.email) lỗi: \(why)", kind: .error)
+        }
+    }
+
+    /// Makes an idle account the live login for a few seconds, runs `work`, keeps
+    /// whatever tokens Claude Code rotated, and switches back.
+    private func withTemporarilyActive(_ id: String, _ work: () async -> Void) async -> Bool {
+        guard !busy, usageLoading.isEmpty else { return false }
         busy = true
         defer { busy = false }
         let previous = state.activeId
-        let before = acc.refreshTokenExpiresAt
-        guard switchTo(id, quiet: true, forceLogin: true) else { return }
+        guard switchTo(id, quiet: true, forceLogin: true) else { return false }
+        await work()
+        sync()
+        if let previous, previous != id { switchTo(previous, quiet: true) }
+        save()
+        return true
+    }
 
+    /// Runs the claude CLI against the live login (never a setup-token from the
+    /// environment), without saving a session transcript.
+    private func runClaude(_ args: [String], timeout: TimeInterval) async -> ShellResult? {
+        guard let claude = Self.claudePath else { return nil }
         var env = ProcessInfo.processInfo.environment
         for key in [ClaudeFiles.envKey, "CLAUDE_CONFIG_DIR", "ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN"] { env[key] = nil }
         let runEnv = env
         let home = FileManager.default.homeDirectoryForCurrentUser
-        let result = await Task.detached {
-            Shell.run(claude, ["-p", "Reply with OK", "--model", "haiku", "--max-turns", "1", "--strict-mcp-config"],
-                      env: runEnv, cwd: home, timeout: 180)
+        return await Task.detached {
+            Shell.run(claude, args + ["--no-session-persistence", "--strict-mcp-config"],
+                      env: runEnv, cwd: home, timeout: timeout)
         }.value
+    }
 
-        sync()
-        update(id) { $0.lastKeepAliveAt = Date() }
-        if let previous, previous != id { switchTo(previous, quiet: true) }
-        save()
+    // MARK: Usage
 
-        if result.status == 0 {
-            let after = account(id)?.refreshTokenExpiresAt
-            announce("Đã làm mới \(acc.email): hạn login \(Fmt.date(before)) → \(Fmt.date(after))", kind: .success)
-        } else {
-            let why = (result.stderr + result.stdout).trimmingCharacters(in: .whitespacesAndNewlines).prefix(200)
-            announce("Làm mới \(acc.email) lỗi: \(why)", kind: .error)
+    /// `/usage` is a local command: no model turn, nothing billed. It reads the
+    /// plan limits of the live login; a setup-token can't (no profile scope).
+    private func fetchLiveUsage() async -> UsageSnapshot? {
+        guard let r = await runClaude(["-p", "/usage", "--output-format", "json"], timeout: 60), r.status == 0,
+              let obj = (try? JSONSerialization.jsonObject(with: Data(r.stdout.utf8))) as? [String: Any],
+              let text = obj["result"] as? String else { return nil }
+        return UsageParser.parse(text)
+    }
+
+    func canReadUsage(_ acc: Account) -> Bool {
+        acc.loginUsable && !(acc.id == state.activeId && state.activeUsesSetupToken)
+    }
+
+    /// The active account's usage, at most every `maxAge` seconds unless forced.
+    func refreshActiveUsage(maxAge: TimeInterval = 180) {
+        guard let acc = active, canReadUsage(acc), !busy, !usageLoading.contains(acc.id) else { return }
+        if let u = acc.usage, -u.fetchedAt.timeIntervalSinceNow < maxAge { return }
+        usageLoading.insert(acc.id)
+        Task {
+            let snap = await fetchLiveUsage()
+            usageLoading.remove(acc.id)
+            // The CLI read whichever login was live when it started; drop the result
+            // if the user switched meanwhile.
+            guard let snap, state.activeId == acc.id else { return }
+            update(acc.id) { $0.usage = snap }
+            save()
         }
+    }
+
+    /// Any account's usage; an idle one is made live for a few seconds to read it.
+    func refreshUsage(_ id: String) async {
+        guard let acc = account(id) else { return }
+        guard canReadUsage(acc) else {
+            return announce("\(acc.title): cần login thường còn hạn để đọc usage.", kind: .warning)
+        }
+        if id == state.activeId { return refreshActiveUsage(maxAge: 0) }
+        var snap: UsageSnapshot?
+        let ran = await withTemporarilyActive(id) {
+            self.usageLoading.insert(id)
+            snap = await self.fetchLiveUsage()
+            self.usageLoading.remove(id)
+        }
+        guard ran else { return }
+        if let snap {
+            update(id) { $0.usage = snap }
+            save()
+        } else {
+            announce("Không đọc được usage của \(acc.title).", kind: .error)
+        }
+    }
+
+    func refreshAllUsage() async {
+        for acc in state.accounts where canReadUsage(acc) {
+            await refreshUsage(acc.id)
+        }
+    }
+
+    /// When the active account is nearly out, the account with the most room left.
+    func suggestion() -> (account: Account, load: Int)? {
+        guard let active, let load = active.usage?.load, load >= 80 else { return nil }
+        let best = state.accounts
+            .filter { $0.id != active.id && health($0).level != .expired }
+            .compactMap { a in a.usage.map { (account: a, load: $0.load) } }
+            .min { $0.load < $1.load }
+        guard let best, best.load < load else { return nil }
+        return best
     }
 
     // MARK: Account actions
@@ -535,5 +629,24 @@ enum Fmt {
         let f = DateFormatter()
         f.dateFormat = "dd/MM/yyyy HH:mm"
         return f.string(from: d)
+    }
+
+    /// "hôm nay 16:59", "mai 22:59", "26/10 08:00".
+    static func reset(_ d: Date) -> String {
+        let f = DateFormatter()
+        f.dateFormat = "HH:mm"
+        let cal = Calendar.current
+        if cal.isDateInToday(d) { return "hôm nay \(f.string(from: d))" }
+        if cal.isDateInTomorrow(d) { return "mai \(f.string(from: d))" }
+        f.dateFormat = "dd/MM HH:mm"
+        return f.string(from: d)
+    }
+
+    static func ago(_ d: Date) -> String {
+        let s = -d.timeIntervalSinceNow
+        if s < 60 { return "vừa xong" }
+        if s < 3600 { return "\(Int(s / 60)) phút trước" }
+        if s < 86400 { return "\(Int(s / 3600)) giờ trước" }
+        return date(d)
     }
 }

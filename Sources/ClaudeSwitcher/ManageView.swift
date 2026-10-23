@@ -22,6 +22,7 @@ struct ManageView: View {
                                 }
                                 let h = store.health(acc)
                                 HealthLine(level: h.level, text: h.text)
+                                UsageCompact(account: acc)
                             }
                         }
                         .padding(.vertical, 3)
@@ -140,6 +141,13 @@ struct AccountDetail: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 16) {
                 header
+                Card(title: "Usage", icon: "chart.bar.fill") {
+                    UsageDetail(account: account)
+                    if !isActive {
+                        Text("Số liệu của tài khoản không dùng là lần đọc gần nhất. Cập nhật = tạm chuyển sang tài khoản này vài giây để đọc rồi chuyển lại, không tốn lượt chat.")
+                            .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                    }
+                }
                 loginCard
                 backupCard
                 otherCard

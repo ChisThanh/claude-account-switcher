@@ -119,3 +119,115 @@ struct WaitingForLogin: View {
         .background(RoundedRectangle(cornerRadius: 8).fill(Color.blue.opacity(0.10)))
     }
 }
+
+// MARK: Usage
+
+private func usageColor(_ percent: Int) -> Color {
+    percent >= 90 ? .red : percent >= 70 ? .orange : .green
+}
+
+struct UsageBar: View {
+    let percent: Int
+    var height: CGFloat = 6
+
+    var body: some View {
+        GeometryReader { geo in
+            ZStack(alignment: .leading) {
+                Capsule().fill(Color.primary.opacity(0.1))
+                Capsule().fill(usageColor(percent).gradient)
+                    .frame(width: max(geo.size.width * CGFloat(min(percent, 100)) / 100, percent > 0 ? height : 0))
+            }
+        }
+        .frame(height: height)
+    }
+}
+
+/// Every plan limit with its bar and reset time, plus when it was read.
+struct UsageDetail: View {
+    @EnvironmentObject var store: AccountStore
+    let account: Account
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            if let usage = account.usage {
+                ForEach(usage.windows) { w in
+                    VStack(alignment: .leading, spacing: 4) {
+                        HStack {
+                            Text(w.title).font(.callout)
+                            Spacer()
+                            Text("\(w.currentPercent)%").font(.callout.monospacedDigit().weight(.semibold))
+                                .foregroundStyle(usageColor(w.currentPercent))
+                        }
+                        UsageBar(percent: w.currentPercent)
+                        if let reset = w.resetsAt {
+                            Text(w.currentPercent < w.percent ? "Đã reset" : "Reset \(Fmt.reset(reset))")
+                                .font(.caption2).foregroundStyle(.secondary)
+                        }
+                    }
+                }
+            } else {
+                Text(store.canReadUsage(account) ? "Chưa có số liệu — bấm Cập nhật." : "Không đọc được usage khi đang dùng token dự phòng hoặc login đã hết hạn.")
+                    .font(.callout).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            }
+            UsageFooter(account: account)
+        }
+    }
+}
+
+struct UsageFooter: View {
+    @EnvironmentObject var store: AccountStore
+    let account: Account
+
+    var body: some View {
+        HStack(spacing: 6) {
+            if let usage = account.usage {
+                Text("Cập nhật \(Fmt.ago(usage.fetchedAt))").font(.caption2).foregroundStyle(.secondary)
+            }
+            Spacer()
+            if store.usageLoading.contains(account.id) {
+                ProgressView().controlSize(.mini)
+                Text("Đang đọc…").font(.caption2).foregroundStyle(.secondary)
+            } else if store.canReadUsage(account) {
+                Button {
+                    Task { await store.refreshUsage(account.id) }
+                } label: {
+                    Label("Cập nhật", systemImage: "arrow.clockwise").font(.caption)
+                }
+                .buttonStyle(.borderless)
+                .disabled(store.busy)
+                .help(account.id == store.state.activeId
+                      ? "Đọc lại usage"
+                      : "Tạm chuyển sang tài khoản này vài giây để đọc usage, rồi chuyển lại")
+            }
+        }
+    }
+}
+
+/// "Phiên ▮▮▯ 19% · Tuần ▮▮▮ 75%" for list rows.
+struct UsageCompact: View {
+    @EnvironmentObject var store: AccountStore
+    let account: Account
+
+    var body: some View {
+        HStack(spacing: 10) {
+            if store.usageLoading.contains(account.id) {
+                ProgressView().controlSize(.mini)
+                Text("Đang đọc usage…").font(.caption2).foregroundStyle(.secondary)
+            } else if let usage = account.usage {
+                ForEach([usage.session, usage.week].compactMap { $0 }) { w in
+                    HStack(spacing: 4) {
+                        Text(w.shortTitle).font(.caption2).foregroundStyle(.secondary)
+                        UsageBar(percent: w.currentPercent, height: 4).frame(width: 34)
+                        Text("\(w.currentPercent)%").font(.caption2.monospacedDigit())
+                            .foregroundStyle(usageColor(w.currentPercent))
+                    }
+                }
+                if account.id != store.state.activeId {
+                    Text(Fmt.ago(usage.fetchedAt)).font(.caption2).foregroundStyle(.tertiary)
+                }
+            } else {
+                Text("Chưa có usage").font(.caption2).foregroundStyle(.tertiary)
+            }
+        }
+    }
+}

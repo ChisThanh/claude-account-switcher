@@ -15,6 +15,7 @@ struct Account: Codable, Identifiable, Equatable {
     var preferSetupToken: Bool
     var lastUsedAt: Date?
     var lastKeepAliveAt: Date?
+    var usage: UsageSnapshot?
 
     var title: String {
         if let label, !label.isEmpty { return label }
