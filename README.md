@@ -27,7 +27,7 @@ App lưu bản sao của từng tài khoản trong Keychain (dịch vụ `Claude
   - Có login mới qua `claude auth login` thì app tự thêm tài khoản đó.
   - Một phiên cũ ghi đè lại token của tài khoản khác thì app giữ token đó cho đúng tài khoản rồi đặt lại tài khoản đang chọn.
 - **Token dự phòng:** token tạo bằng `claude setup-token` sống khoảng 1 năm. Khi login của tài khoản đang dùng hết hạn (hoặc bật "Luôn dùng token dự phòng"), app ghi token này vào `~/.claude/settings.json` ở `env.CLAUDE_CODE_OAUTH_TOKEN`. Khi login dùng được lại, app gỡ token ra. Token này có thể không hỗ trợ một số tính năng gắn với claude.ai.
-- **Tự gia hạn hằng ngày:** mọi tài khoản đã đăng nhập, kể cả tài khoản đang dùng, được gia hạn ít nhất 1 lần mỗi 24 giờ. Mỗi lần Claude Code làm mới token, hạn login được đẩy thêm khoảng 30 ngày. Gia hạn chỉ chạy khi access token (sống khoảng 8 giờ) đã hết hạn. Lượt nào Claude Code đã tự làm mới trong ngày thì app bỏ qua. Cách làm: chạy `/usage` (miễn phí), nếu token chưa đổi thì gửi `claude -p "Reply with OK" --model haiku`.
+- **Tự gia hạn hằng ngày:** mọi tài khoản đã đăng nhập, kể cả tài khoản đang dùng, được gia hạn ít nhất 1 lần mỗi 24 giờ để token luôn mới. Lưu ý: ngày 23/10 một lần làm mới token *không* đẩy hạn login (khoảng 30 ngày kể từ lúc đăng nhập) ra xa hơn. Vì vậy khi login còn dưới 5 ngày mà chưa có token dự phòng, app nhắc đăng nhập lại. Gia hạn chỉ chạy khi access token (sống khoảng 8 giờ) đã hết hạn. Lượt nào Claude Code đã tự làm mới trong ngày thì app bỏ qua. Cách làm: chạy `/usage` (miễn phí), nếu token chưa đổi thì gửi `claude -p "Reply with OK" --model haiku`.
 
 ## Usage
 

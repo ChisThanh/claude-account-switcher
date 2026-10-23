@@ -35,6 +35,8 @@ final class AccountStore {
     private(set) var banner: Banner?
     /// Accounts being renewed right now.
     private(set) var renewingIds: Set<String> = []
+    /// The outcome of the last manual renewal, shown under its button.
+    private(set) var renewNotes: [String: Banner] = [:]
     /// Set while a `claude auth login` is pending; cleared when the new login shows up.
     private(set) var addingSince: Date?
     /// claude processes that were running at the last switch and still hold the old account.
@@ -392,15 +394,18 @@ final class AccountStore {
                 } else if !acc.hasSetupToken {
                     notifyOnce("expired-\(acc.id)", "Login của \(acc.email) đã hết hạn. Hãy đăng nhập lại hoặc thêm token dự phòng.")
                 }
-            } else if !state.autoKeepAlive, exp.timeIntervalSinceNow < Self.keepAliveWindow {
-                notifyOnce("soon-\(acc.id)", "Login của \(acc.email) còn \(exp.daysFromNow) ngày. Bấm Gia hạn ngay hoặc bật tự gia hạn hằng ngày.")
+            } else if !acc.hasSetupToken, exp.timeIntervalSinceNow < Self.keepAliveWindow {
+                // Refreshing doesn't always push the login's expiry, so near the end
+                // only a new login or the 1-year backup token keeps it working.
+                notifyOnce("soon-\(acc.id)", "Login của \(acc.email) còn \(exp.daysFromNow) ngày. Hãy đăng nhập lại hoặc thêm token dự phòng 1 năm.")
             }
         }
     }
 
     /// Every logged-in account, active one included, is renewed at least once a
-    /// day. Each refresh pushes the login's expiry ~30 days out, so this keeps
-    /// all of them alive. A renewal Claude Code did on its own counts, and an
+    /// day so its tokens never go stale. The server doesn't always push the
+    /// login's own expiry on a refresh (seen 23 Oct), so near the end the
+    /// 1-year backup token or a new login is what keeps an account working. A renewal Claude Code did on its own counts, and an
     /// access token that is still valid means one happened within its ~8 h life.
     static let renewInterval: TimeInterval = 24 * 3600
     @ObservationIgnored private var renewing = false
@@ -445,12 +450,13 @@ final class AccountStore {
         guard let acc = account(id), acc.loginUsable, !renewingIds.contains(id) else { return }
         if let exp = acc.accessTokenExpiresAt, exp > Date() {
             if manual {
-                announce("\(acc.title): token còn hạn đến \(Fmt.reset(exp)). Claude Code chỉ làm mới khi token hết hạn, nên chưa cần làm gì.", kind: .info)
+                renewNotes[id] = Banner(kind: .info, text: "Token còn hạn đến \(Fmt.reset(exp)). Claude Code chỉ đổi token khi token cũ hết hạn, nên gia hạn được sau giờ đó.")
             }
             return
         }
         renewingIds.insert(id)
         defer { renewingIds.remove(id) }
+        if manual { renewNotes[id] = nil }
         let before = acc.refreshTokenExpiresAt
         let result = usesLiveLogin(id) ? await runOnLiveLogin(id, ping: true) : await runInProfile(id, ping: true)
 
@@ -462,12 +468,16 @@ final class AccountStore {
         let after = account(id)?.refreshTokenExpiresAt
         if result.renewed {
             if manual {
-                announce("Đã gia hạn \(acc.title): hạn login \(Fmt.date(before)) → \(Fmt.date(after)).", kind: .success)
+                let token = account(id)?.accessTokenExpiresAt.map { " Token mới có hạn đến \(Fmt.reset($0))." } ?? ""
+                let login = after == before
+                    ? "Hạn login vẫn là \(Fmt.date(after)) — máy chủ không đẩy thêm lần này."
+                    : "Hạn login \(Fmt.date(before)) → \(Fmt.date(after))."
+                renewNotes[id] = Banner(kind: .success, text: "Đã gia hạn.\(token) \(login)")
             }
         } else {
             let why = result.error.trimmingCharacters(in: .whitespacesAndNewlines).prefix(160)
             let text = "Không gia hạn được \(acc.title)" + (why.isEmpty ? "." : ": \(why)")
-            if manual { announce(text, kind: .error) } else { notifyOnce("renew-fail-\(id)", text) }
+            if manual { renewNotes[id] = Banner(kind: .error, text: text) } else { notifyOnce("renew-fail-\(id)", text) }
         }
     }
 
@@ -843,7 +853,7 @@ final class AccountStore {
         guard let exp = acc.refreshTokenExpiresAt else { return (.good, "Đăng nhập tốt") }
         let days = max(exp.daysFromNow, 0)
         if exp.timeIntervalSinceNow < Self.keepAliveWindow {
-            return (.soon, state.autoKeepAlive ? "Còn \(days) ngày · app sắp gia hạn" : "Còn \(days) ngày · nên bấm Gia hạn")
+            return (.soon, acc.hasSetupToken ? "Còn \(days) ngày · có token dự phòng" : "Còn \(days) ngày · nên đăng nhập lại")
         }
         return (.good, "Đăng nhập tốt · còn \(days) ngày")
     }
@@ -886,6 +896,8 @@ final class AccountStore {
     }
 
     func dismissBanner() { banner = nil }
+
+    func dismissRenewNote(_ id: String) { renewNotes[id] = nil }
 
     private func notifyOnce(_ key: String, _ text: String) {
         if let last = notified[key], -last.timeIntervalSinceNow < 86400 { return }

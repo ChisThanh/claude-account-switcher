@@ -235,12 +235,12 @@ struct AccountDetail: View {
                 if health.level == .expired || !account.loginUsable {
                     AddAccountMenu(email: account.email) { Text("Đăng nhập lại") }.fixedSize()
                 } else {
-                    Button(store.renewingIds.contains(account.id) ? "Đang gia hạn…" : "Gia hạn ngay") {
-                        Task { await store.refreshLogin(account.id) }
-                    }
-                    .disabled(store.renewingIds.contains(account.id))
+                    renewButton
                 }
                 Spacer()
+            }
+            if let note = store.renewNotes[account.id] {
+                BannerView(banner: note) { store.dismissRenewNote(account.id) }
             }
         }
     }
@@ -252,12 +252,35 @@ struct AccountDetail: View {
                 return "Tự gia hạn hằng ngày đang tắt. Bật lại trong ⚙ để login không bao giờ hết hạn."
             }
             return isActive
-                ? "App gia hạn mọi tài khoản ít nhất 1 lần mỗi ngày, kể cả tài khoản đang dùng. Mỗi lần gia hạn đẩy hạn login thêm khoảng 30 ngày. Lượt nào Claude Code đã tự làm mới thì app bỏ qua."
-                : "App gia hạn mọi tài khoản ít nhất 1 lần mỗi ngày trong hồ sơ riêng của tài khoản này, không đổi tài khoản đang dùng: đọc /usage (miễn phí) để Claude Code lấy token mới. Chỉ khi cách đó không đổi được token mới gửi 1 câu rất nhỏ bằng haiku."
+                ? "App gia hạn mọi tài khoản ít nhất 1 lần mỗi ngày, kể cả tài khoản đang dùng, để token luôn mới. Lượt nào Claude Code đã tự làm mới thì app bỏ qua. Hạn login (khoảng 30 ngày từ lúc đăng nhập) không phải lúc nào cũng được máy chủ đẩy thêm — gần hết hạn thì token dự phòng 1 năm hoặc đăng nhập lại giữ tài khoản chạy."
+                : "App gia hạn mọi tài khoản ít nhất 1 lần mỗi ngày trong hồ sơ riêng của tài khoản này, không đổi tài khoản đang dùng: đọc /usage (miễn phí) để Claude Code lấy token mới, chỉ khi không được mới gửi 1 câu rất nhỏ bằng haiku. Hạn login không phải lúc nào cũng được đẩy thêm — gần hết hạn thì token dự phòng 1 năm hoặc đăng nhập lại giữ tài khoản chạy."
         case .backup:
             return "Login thường đã hết hạn hoặc đang tắt, claude dùng token dự phòng. Đăng nhập lại để có đủ tính năng."
         case .expired:
             return "Login đã hết hạn và chưa có token dự phòng. Bấm Đăng nhập lại và chọn đúng \(account.email)."
+        }
+    }
+
+    /// Claude Code only swaps tokens once the access token (~8 h) has expired, so
+    /// before that the button says when it becomes possible instead of doing nothing.
+    @ViewBuilder private var renewButton: some View {
+        let renewing = store.renewingIds.contains(account.id)
+        TimelineView(.everyMinute) { _ in
+            if let exp = account.accessTokenExpiresAt, exp > Date(), !renewing {
+                VStack(alignment: .leading, spacing: 4) {
+                    Button("Gia hạn được sau \(Fmt.reset(exp))") {}.disabled(true)
+                    Text("Token hiện tại còn hạn. Claude Code chỉ đổi token khi token cũ hết hạn, nên chưa gia hạn sớm hơn được.")
+                        .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                }
+            } else {
+                HStack(spacing: 8) {
+                    Button(renewing ? "Đang gia hạn…" : "Gia hạn ngay") {
+                        Task { await store.refreshLogin(account.id) }
+                    }
+                    .disabled(renewing)
+                    if renewing { ProgressView().controlSize(.small) }
+                }
+            }
         }
     }
 
