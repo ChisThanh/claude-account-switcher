@@ -30,6 +30,10 @@ final class AccountStore: ObservableObject {
     private var savedRaw: [String: String] = [:]   // login blob last stored per account; skips keychain calls
     private var notified: [String: Date] = [:]
     private var lastHealthCheck = Date.distantPast
+    private var lastLiveRaw: String?
+    private var liveRawChangedAt = Date.distantPast
+    private var addingBaseline: String?
+    private var addingEmail: String?
     private var timer: Timer?
 
     /// True when no state file existed at startup.
@@ -94,13 +98,20 @@ final class AccountStore: ObservableObject {
     func sync() {
         defer { save() }
         guard let raw = Keychain.readClaudeLogin(), let blob = LoginBlob(raw: raw) else { return }
+        if raw != lastLiveRaw {
+            if lastLiveRaw != nil { liveRawChangedAt = Date() }
+            lastLiveRaw = raw
+        }
         let oa = ClaudeFiles.oauthAccount()
 
-        if let oa, let oaId = oa["accountUuid"] as? String, oa["organizationUuid"] as? String == blob.organizationUuid {
+        if let oa, let oaId = oa["accountUuid"] as? String, describesSameLogin(blob, oa) {
             let isNew = account(oaId) == nil
             store(blob, for: oaId, oauthAccount: oa)
             guard let acc = account(oaId) else { return }
-            if isNew { addingSince = nil }
+            // A fresh login has no organizationUuid yet; a routine refresh does.
+            if addingSince != nil, raw != addingBaseline, isNew || blob.organizationUuid == nil {
+                finishAdding(acc, isNew: isNew)
+            }
             if state.activeId != oaId {
                 state.activeId = oaId
                 try? applyEnvMode(for: acc)
@@ -122,6 +133,30 @@ final class AccountStore: ObservableObject {
             notifyOnce("stale-\(owner.id)", "Một phiên Claude cũ vẫn chạy bằng \(owner.email). Đã đặt lại \(active.email) — hãy khởi động lại phiên đó.")
         }
         try? ClaudeFiles.setOauthAccount(active.oauthAccount)
+    }
+
+    /// Token refreshes carry the organization, so it must match. A fresh
+    /// `claude auth login` writes the keychain without it and updates
+    /// ~/.claude.json a moment later; until the profile there is at least as
+    /// new as the keychain change it may still describe the previous account.
+    private func describesSameLogin(_ blob: LoginBlob, _ oa: [String: Any]) -> Bool {
+        if let org = blob.organizationUuid { return org == oa["organizationUuid"] as? String }
+        guard let ms = oa["profileFetchedAt"] as? NSNumber else { return liveRawChangedAt == .distantPast }
+        return Date(timeIntervalSince1970: ms.doubleValue / 1000) >= liveRawChangedAt.addingTimeInterval(-15)
+    }
+
+    private func finishAdding(_ acc: Account, isNew: Bool) {
+        let relogin = addingEmail?.caseInsensitiveCompare(acc.email) == .orderedSame
+        addingSince = nil
+        addingEmail = nil
+        if isNew {
+            announce("Đã thêm \(acc.email) và đang dùng tài khoản này.", kind: .success)
+        } else if relogin {
+            announce("Đã đăng nhập lại \(acc.email).", kind: .success)
+        } else {
+            announce("Bạn vừa đăng nhập lại \(acc.email) — tài khoản này đã có. Trình duyệt đang tự dùng tài khoản claude.ai cũ. Để thêm tài khoản khác: đăng xuất claude.ai trên trình duyệt (hoặc mở link trong Terminal bằng cửa sổ ẩn danh), rồi bấm Thêm tài khoản lần nữa.",
+                     kind: .warning)
+        }
     }
 
     private func ownerOf(_ blob: LoginBlob) -> Account? {
@@ -280,13 +315,24 @@ final class AccountStore: ObservableObject {
     func addAccount(email: String? = nil) {
         sync()
         guard let claude = Self.claudePath else { return announce("Không tìm thấy lệnh claude", kind: .error) }
-        var command = "'\(claude)' auth login"
+        var command = """
+            echo 'Trình duyệt sẽ mở trang đăng nhập Claude.'
+            echo 'Nếu nó tự dùng tài khoản claude.ai đang đăng nhập sẵn mà bạn muốn tài khoản KHÁC:'
+            echo '  copy link bên dưới và mở trong cửa sổ ẩn danh (Cmd+Shift+N), hoặc đăng xuất claude.ai trước.'
+            echo
+            '\(claude)' auth login
+            """
         if let email { command += " --email '\(email.replacingOccurrences(of: "'", with: ""))'" }
         openInTerminal("login", command)
+        addingBaseline = Keychain.readClaudeLogin()
+        addingEmail = email
         addingSince = Date()
     }
 
-    func cancelAdding() { addingSince = nil }
+    func cancelAdding() {
+        addingSince = nil
+        addingEmail = nil
+    }
 
     /// A `claude setup-token` token the user just copied, if the clipboard holds one.
     func clipboardSetupToken() -> String? {

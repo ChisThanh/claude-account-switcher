@@ -109,7 +109,7 @@ struct WaitingForLogin: View {
             ProgressView().controlSize(.small)
             VStack(alignment: .leading, spacing: 2) {
                 Text("Đang chờ bạn đăng nhập…").font(.callout.weight(.medium))
-                Text("Làm theo Terminal và trình duyệt. App tự nhận tài khoản khi xong.")
+                Text("Làm theo Terminal và trình duyệt. Muốn tài khoản khác mà trình duyệt tự chọn tài khoản cũ? Mở link trong Terminal bằng cửa sổ ẩn danh.")
                     .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             }
             Spacer(minLength: 0)
