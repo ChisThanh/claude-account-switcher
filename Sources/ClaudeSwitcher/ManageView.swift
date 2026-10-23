@@ -137,6 +137,7 @@ struct AccountDetail: View {
     @State private var clipboardToken: String?
     @State private var confirmRemove = false
     @State private var saving = false
+    @State private var advancedOpen = false
 
     private var isActive: Bool { account.id == store.state.activeId }
 
@@ -275,7 +276,7 @@ struct AccountDetail: View {
                 }
                 Text("Khi login thường hết hạn, app tự chuyển claude sang token này để bạn không bị đăng xuất.")
                     .font(.callout).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
-                DisclosureGroup("Nâng cao") {
+                DisclosureGroup(isExpanded: $advancedOpen) {
                     VStack(alignment: .leading, spacing: 8) {
                         Toggle("Luôn dùng token dự phòng thay cho login thường", isOn: Binding(
                             get: { account.preferSetupToken },
@@ -286,6 +287,13 @@ struct AccountDetail: View {
                         }
                     }
                     .padding(.top, 6)
+                } label: {
+                    // On macOS only the chevron toggles a DisclosureGroup; make the
+                    // whole row a target.
+                    Text("Nâng cao")
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .contentShape(Rectangle())
+                        .onTapGesture { withAnimation(.easeInOut(duration: 0.2)) { advancedOpen.toggle() } }
                 }
             } else {
                 Text("Login thường chỉ sống khoảng 30 ngày nếu không dùng. Token này sống khoảng 1 năm và giữ bạn luôn đăng nhập.")
