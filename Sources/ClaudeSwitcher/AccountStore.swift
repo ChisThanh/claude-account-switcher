@@ -45,6 +45,7 @@ final class AccountStore: ObservableObject {
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         load()
         isFirstLaunch = lastSaved == nil
+        recoverHalfSavedSetupTokens()
         UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound]) { _, _ in }
         tick()
         // 5 s keeps "add account" and the restart hint responsive; the heavier
@@ -336,9 +337,40 @@ final class AccountStore: ObservableObject {
 
     /// A `claude setup-token` token the user just copied, if the clipboard holds one.
     func clipboardSetupToken() -> String? {
-        guard let s = NSPasteboard.general.string(forType: .string)?.trimmingCharacters(in: .whitespacesAndNewlines),
-              s.hasPrefix("sk-ant-oat"), !s.contains(" "), !s.contains("\n") else { return nil }
-        return s
+        NSPasteboard.general.string(forType: .string).flatMap(Self.cleanSetupToken)
+    }
+
+    /// `claude setup-token` prints the token wrapped across lines, so a copy from
+    /// Terminal carries a newline and indent in the middle. Tokens never contain
+    /// whitespace: drop all of it, then require the token's shape.
+    static func cleanSetupToken(_ text: String) -> String? {
+        let t = String(text.unicodeScalars.filter { !CharacterSet.whitespacesAndNewlines.contains($0) })
+        guard t.hasPrefix("sk-ant-oat"), t.count >= 40,
+              t.unicodeScalars.allSatisfy({ CharacterSet.alphanumerics.contains($0) || $0 == "-" || $0 == "_" })
+        else { return nil }
+        return t
+    }
+
+    /// Before tokens were cleaned, a pasted token with a line break was written to
+    /// the keychain but reported as failed. `security -w` prints such a value as
+    /// hex; decode it, clean it and keep it.
+    private func recoverHalfSavedSetupTokens() {
+        for acc in state.accounts where !acc.hasSetupToken {
+            guard var stored = Keychain.setupToken(acc.id) else { continue }
+            if stored.count % 2 == 0, stored.allSatisfy(\.isHexDigit) {
+                var bytes = [UInt8]()
+                var i = stored.startIndex
+                while i < stored.endIndex {
+                    let j = stored.index(i, offsetBy: 2)
+                    bytes.append(UInt8(stored[i..<j], radix: 16) ?? 0)
+                    i = j
+                }
+                stored = String(decoding: bytes, as: UTF8.self)
+            }
+            guard let token = Self.cleanSetupToken(stored), Keychain.saveSetupToken(acc.id, token) else { continue }
+            update(acc.id) { $0.setupTokenAddedAt = Date() }
+            announce("Đã khôi phục token dự phòng đã dán cho \(acc.email).", kind: .success)
+        }
     }
 
     func createSetupToken() {
@@ -348,9 +380,8 @@ final class AccountStore: ObservableObject {
 
     @discardableResult
     func saveSetupToken(_ token: String, for id: String) -> Bool {
-        let t = token.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard t.hasPrefix("sk-ant-") else {
-            announce("Token không đúng dạng (sk-ant-…)", kind: .error)
+        guard let t = Self.cleanSetupToken(token) else {
+            announce("Đây không phải token của claude setup-token. Token bắt đầu bằng sk-ant-oat01-, chỉ gồm chữ, số, - và _.", kind: .error)
             return false
         }
         guard Keychain.saveSetupToken(id, t) else {
