@@ -3,11 +3,23 @@ import Foundation
 import ServiceManagement
 import UserNotifications
 
+struct Banner: Equatable {
+    enum Kind { case info, success, warning, error }
+    let kind: Kind
+    let text: String
+}
+
 @MainActor
 final class AccountStore: ObservableObject {
+    static let shared = AccountStore()
+
     @Published private(set) var state = AppState()
-    @Published private(set) var message: String?
+    @Published private(set) var banner: Banner?
     @Published private(set) var busy = false
+    /// Set while `claude auth login` runs in Terminal; cleared when the new login shows up.
+    @Published private(set) var addingSince: Date?
+    /// claude processes that were running at the last switch and still hold the old account.
+    @Published private(set) var staleSessions: Set<Int32> = []
 
     /// Idle accounts whose login expires within this window get refreshed.
     static let keepAliveWindow: TimeInterval = 5 * 86400
@@ -17,16 +29,23 @@ final class AccountStore: ObservableObject {
     private var lastSaved: AppState?
     private var savedRaw: [String: String] = [:]   // login blob last stored per account; skips keychain calls
     private var notified: [String: Date] = [:]
+    private var lastHealthCheck = Date.distantPast
     private var timer: Timer?
 
-    init() {
+    /// True when no state file existed at startup.
+    private(set) var isFirstLaunch = false
+
+    private init() {
         dir = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
             .appendingPathComponent("ClaudeSwitcher")
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         load()
+        isFirstLaunch = lastSaved == nil
         UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound]) { _, _ in }
         tick()
-        timer = Timer.scheduledTimer(withTimeInterval: 30, repeats: true) { [weak self] _ in
+        // 5 s keeps "add account" and the restart hint responsive; the heavier
+        // health and keep-alive checks run once a minute inside tick().
+        timer = Timer.scheduledTimer(withTimeInterval: 5, repeats: true) { [weak self] _ in
             Task { @MainActor in self?.tick() }
         }
     }
@@ -40,11 +59,31 @@ final class AccountStore: ObservableObject {
             .first { FileManager.default.isExecutableFile(atPath: $0) }
     }
 
-    func tick() {
+    func tick(force: Bool = false) {
         guard !busy else { return }
         sync()
+        if !staleSessions.isEmpty { staleSessions.formIntersection(Self.runningClaudePids()) }
+        if let since = addingSince, -since.timeIntervalSinceNow > 15 * 60 { addingSince = nil }
+        guard force || -lastHealthCheck.timeIntervalSinceNow >= 60 else { return }
+        lastHealthCheck = Date()
         checkHealth()
         if state.autoKeepAlive { keepAliveIfDue() }
+    }
+
+    /// Terminal (`~/.local/share/claude/versions/…`) and IDE-extension
+    /// (`…/native-binary/claude`) Claude Code processes.
+    static func runningClaudePids() -> Set<Int32> {
+        let r = Shell.run("/bin/ps", ["-axo", "pid=,comm="])
+        var pids = Set<Int32>()
+        for line in r.stdout.split(separator: "\n") {
+            let parts = line.trimmingCharacters(in: .whitespaces).split(separator: " ", maxSplits: 1)
+            guard parts.count == 2, let pid = Int32(parts[0]) else { continue }
+            let comm = parts[1]
+            if comm.contains("/.local/share/claude/versions/") || comm.hasSuffix("/native-binary/claude") {
+                pids.insert(pid)
+            }
+        }
+        return pids
     }
 
     // MARK: Sync with Claude Code
@@ -61,10 +100,12 @@ final class AccountStore: ObservableObject {
             let isNew = account(oaId) == nil
             store(blob, for: oaId, oauthAccount: oa)
             guard let acc = account(oaId) else { return }
+            if isNew { addingSince = nil }
             if state.activeId != oaId {
                 state.activeId = oaId
                 try? applyEnvMode(for: acc)
-                announce(isNew ? "Đã thêm tài khoản \(acc.email)" : "Claude đang dùng \(acc.email)")
+                announce(isNew ? "Đã thêm \(acc.email) và đang dùng tài khoản này." : "Claude đang dùng \(acc.email).",
+                         kind: .success)
             } else if state.activeUsesSetupToken, acc.loginUsable, !acc.preferSetupToken {
                 try? applyEnvMode(for: acc)   // logged in again: back to the full login
             }
@@ -91,7 +132,7 @@ final class AccountStore: ObservableObject {
     private func store(_ blob: LoginBlob, for id: String, oauthAccount oa: [String: Any]?) {
         if savedRaw[id] != blob.raw {
             if Keychain.storedLogin(id) != blob.raw, !Keychain.saveLogin(id, blob.raw) {
-                announce("Không lưu được login vào Keychain")
+                announce("Không lưu được login vào Keychain", kind: .error)
                 return
             }
             savedRaw[id] = blob.raw
@@ -118,13 +159,13 @@ final class AccountStore: ObservableObject {
         sync()
         guard let acc = account(id) else { return false }
         if !acc.loginUsable && !acc.hasSetupToken {
-            announce("\(acc.email): login đã hết hạn và chưa có token dự phòng. Hãy đăng nhập lại.")
+            announce("\(acc.email): login đã hết hạn và chưa có token dự phòng. Hãy đăng nhập lại.", kind: .error)
             return false
         }
         do {
             if let raw = Keychain.storedLogin(id) {
                 guard Keychain.writeClaudeLogin(raw) else {
-                    announce("Không ghi được login vào Keychain")
+                    announce("Không ghi được login vào Keychain", kind: .error)
                     return false
                 }
                 savedRaw[id] = raw
@@ -132,15 +173,16 @@ final class AccountStore: ObservableObject {
             try ClaudeFiles.setOauthAccount(acc.oauthAccount)
             try applyEnvMode(for: acc, forceLogin: forceLogin)
         } catch {
-            announce(error.localizedDescription)
+            announce(error.localizedDescription, kind: .error)
             return false
         }
         state.activeId = id
         update(id) { $0.lastUsedAt = Date() }
         save()
         if !quiet {
-            let mode = state.activeUsesSetupToken ? " (token dự phòng)" : ""
-            announce("Đã chuyển sang \(acc.email)\(mode). Các phiên claude đang mở cần khởi động lại.")
+            staleSessions = Self.runningClaudePids()
+            let mode = state.activeUsesSetupToken ? " bằng token dự phòng" : ""
+            announce("Đã chuyển sang \(acc.title)\(mode).", kind: .success)
         }
         return true
     }
@@ -159,7 +201,7 @@ final class AccountStore: ObservableObject {
         if state.accounts.contains(where: { $0.hasSetupToken && Keychain.setupToken($0.id) == current }) {
             try ClaudeFiles.setEnvToken(nil)
         } else {
-            announce("~/.claude/settings.json có \(ClaudeFiles.envKey) không do app đặt — nó đang đè lên login.")
+            announce("~/.claude/settings.json có \(ClaudeFiles.envKey) không do app đặt — nó đang đè lên login.", kind: .error)
         }
     }
 
@@ -199,7 +241,7 @@ final class AccountStore: ObservableObject {
     func refreshLogin(_ id: String) async {
         guard !busy, let acc = account(id) else { return }
         guard let claude = Self.claudePath else {
-            announce("Không tìm thấy lệnh claude")
+            announce("Không tìm thấy lệnh claude", kind: .error)
             return
         }
         busy = true
@@ -224,24 +266,37 @@ final class AccountStore: ObservableObject {
 
         if result.status == 0 {
             let after = account(id)?.refreshTokenExpiresAt
-            announce("Đã làm mới \(acc.email): hạn login \(Fmt.date(before)) → \(Fmt.date(after))")
+            announce("Đã làm mới \(acc.email): hạn login \(Fmt.date(before)) → \(Fmt.date(after))", kind: .success)
         } else {
             let why = (result.stderr + result.stdout).trimmingCharacters(in: .whitespacesAndNewlines).prefix(200)
-            announce("Làm mới \(acc.email) lỗi: \(why)")
+            announce("Làm mới \(acc.email) lỗi: \(why)", kind: .error)
         }
     }
 
     // MARK: Account actions
 
-    func addAccount() {
+    /// Runs `claude auth login` in Terminal; with an email it pre-fills the page
+    /// (used to log an expired account back in).
+    func addAccount(email: String? = nil) {
         sync()
-        guard let claude = Self.claudePath else { return announce("Không tìm thấy lệnh claude") }
-        openInTerminal("login", "'\(claude)' auth login")
-        announce("Đăng nhập tài khoản mới trong Terminal. App tự nhận khi xong (tối đa 30 giây).")
+        guard let claude = Self.claudePath else { return announce("Không tìm thấy lệnh claude", kind: .error) }
+        var command = "'\(claude)' auth login"
+        if let email { command += " --email '\(email.replacingOccurrences(of: "'", with: ""))'" }
+        openInTerminal("login", command)
+        addingSince = Date()
+    }
+
+    func cancelAdding() { addingSince = nil }
+
+    /// A `claude setup-token` token the user just copied, if the clipboard holds one.
+    func clipboardSetupToken() -> String? {
+        guard let s = NSPasteboard.general.string(forType: .string)?.trimmingCharacters(in: .whitespacesAndNewlines),
+              s.hasPrefix("sk-ant-oat"), !s.contains(" "), !s.contains("\n") else { return nil }
+        return s
     }
 
     func createSetupToken() {
-        guard let claude = Self.claudePath else { return announce("Không tìm thấy lệnh claude") }
+        guard let claude = Self.claudePath else { return announce("Không tìm thấy lệnh claude", kind: .error) }
         openInTerminal("setup-token", "'\(claude)' setup-token")
     }
 
@@ -249,17 +304,17 @@ final class AccountStore: ObservableObject {
     func saveSetupToken(_ token: String, for id: String) -> Bool {
         let t = token.trimmingCharacters(in: .whitespacesAndNewlines)
         guard t.hasPrefix("sk-ant-") else {
-            announce("Token không đúng dạng (sk-ant-…)")
+            announce("Token không đúng dạng (sk-ant-…)", kind: .error)
             return false
         }
         guard Keychain.saveSetupToken(id, t) else {
-            announce("Không lưu được token vào Keychain")
+            announce("Không lưu được token vào Keychain", kind: .error)
             return false
         }
         update(id) { $0.setupTokenAddedAt = Date() }
         if id == state.activeId, let acc = account(id) { try? applyEnvMode(for: acc) }
         save()
-        announce("Đã lưu token dự phòng cho \(account(id)?.email ?? "")")
+        announce("Đã lưu token dự phòng cho \(account(id)?.email ?? "")", kind: .success)
         return true
     }
 
@@ -300,24 +355,34 @@ final class AccountStore: ObservableObject {
         do {
             if on { try SMAppService.mainApp.register() } else { try SMAppService.mainApp.unregister() }
         } catch {
-            announce("Không đổi được mở cùng macOS: \(error.localizedDescription)")
+            announce("Không đổi được mở cùng macOS: \(error.localizedDescription)", kind: .error)
         }
         objectWillChange.send()
     }
 
-    func status(_ acc: Account) -> String {
-        var parts: [String] = []
-        if let s = acc.subscriptionType { parts.append(s.capitalized) }
-        if let exp = acc.refreshTokenExpiresAt {
-            parts.append(exp > Date() ? "login \(exp.daysFromNow) ngày" : "login hết hạn")
+    enum HealthLevel { case good, soon, backup, expired }
+
+    /// One plain-language line per account, the same in the menu and the window.
+    func health(_ acc: Account) -> (level: HealthLevel, text: String) {
+        let usingBackup = acc.id == state.activeId && state.activeUsesSetupToken
+        if usingBackup && acc.loginUsable { return (.backup, "Đang dùng token dự phòng") }
+        if !acc.loginUsable {
+            return acc.hasSetupToken
+                ? (.backup, "Login hết hạn · đang có token dự phòng")
+                : (.expired, "Hết hạn · cần đăng nhập lại")
         }
-        if let exp = acc.setupTokenExpiresAt {
-            parts.append("dự phòng ~\(max(exp.daysFromNow, 0)) ngày")
-        } else {
-            parts.append("chưa có dự phòng")
+        guard let exp = acc.refreshTokenExpiresAt else { return (.good, "Đăng nhập tốt") }
+        let days = max(exp.daysFromNow, 0)
+        if exp.timeIntervalSinceNow < Self.keepAliveWindow {
+            if acc.id == state.activeId { return (.soon, "Còn \(days) ngày · tự gia hạn khi đang dùng") }
+            return (.soon, state.autoKeepAlive ? "Còn \(days) ngày · app sắp tự làm mới" : "Còn \(days) ngày · nên bấm Làm mới")
         }
-        if acc.id == state.activeId && state.activeUsesSetupToken { parts.append("đang dùng dự phòng") }
-        return parts.joined(separator: " · ")
+        return (.good, "Đăng nhập tốt · còn \(days) ngày")
+    }
+
+    func backupText(_ acc: Account) -> String {
+        guard let exp = acc.setupTokenExpiresAt else { return "Chưa có token dự phòng" }
+        return "Token dự phòng còn ~\(max(exp.daysFromNow, 0)) ngày"
     }
 
     // MARK: Helpers
@@ -343,12 +408,23 @@ final class AccountStore: ObservableObject {
         NSWorkspace.shared.open(url)
     }
 
-    private func announce(_ text: String) { message = text }
+    /// Shows a banner in the menu and the window; it goes away on its own unless it's an error.
+    private func announce(_ text: String, kind: Banner.Kind = .info) {
+        let b = Banner(kind: kind, text: text)
+        banner = b
+        guard kind != .error else { return }
+        Task { @MainActor [weak self] in
+            try? await Task.sleep(for: .seconds(8))
+            if self?.banner == b { self?.banner = nil }
+        }
+    }
+
+    func dismissBanner() { banner = nil }
 
     private func notifyOnce(_ key: String, _ text: String) {
         if let last = notified[key], -last.timeIntervalSinceNow < 86400 { return }
         notified[key] = Date()
-        announce(text)
+        announce(text, kind: .warning)
         let content = UNMutableNotificationContent()
         content.title = "Claude Switcher"
         content.body = text
