@@ -16,6 +16,12 @@ struct Account: Codable, Identifiable, Equatable {
     var lastUsedAt: Date?
     var lastKeepAliveAt: Date?
     var usage: UsageSnapshot?
+    var accessTokenExpiresAt: Date?
+    /// Last time the stored tokens changed (Claude Code refreshed or a new login).
+    var lastRefreshedAt: Date?
+
+    /// The latest renewal, whether the app ran it or Claude Code did on its own.
+    var lastRenewedAt: Date? { [lastKeepAliveAt, lastRefreshedAt].compactMap { $0 }.max() }
 
     var title: String {
         if let label, !label.isEmpty { return label }

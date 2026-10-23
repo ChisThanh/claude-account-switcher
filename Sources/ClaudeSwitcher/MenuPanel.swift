@@ -168,7 +168,7 @@ struct SettingsMenu: View {
 
     var body: some View {
         Menu {
-            Toggle("Tự làm mới login sắp hết hạn", isOn: Binding(
+            Toggle("Tự gia hạn mọi tài khoản mỗi ngày", isOn: Binding(
                 get: { store.state.autoKeepAlive },
                 set: { store.setAutoKeepAlive($0) }))
             Toggle("Mở cùng macOS", isOn: Binding(

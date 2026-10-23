@@ -260,16 +260,23 @@ final class AccountStore {
     }
 
     private func storeLogin(_ blob: LoginBlob, for id: String, oauthAccount oa: [String: Any]?) async {
+        var renewed = false
         if savedRaw[id] != blob.raw {
             let raw = blob.raw
-            let ok = await io { Keychain.storedLogin(id) == raw || Keychain.saveLogin(id, raw) }
+            let (ok, changed) = await io { () -> (Bool, Bool) in
+                if Keychain.storedLogin(id) == raw { return (true, false) }
+                return (Keychain.saveLogin(id, raw), true)
+            }
             guard ok else { return announce("Không lưu được login vào Keychain", kind: .error) }
             savedRaw[id] = raw
+            renewed = changed
         }
         var acc = account(id) ?? Account(id: id, email: "", organizationUuid: blob.organizationUuid ?? "",
                                          oauthAccount: Data(), hasLogin: true, preferSetupToken: false)
         acc.hasLogin = true
         acc.refreshTokenExpiresAt = blob.refreshTokenExpiresAt
+        acc.accessTokenExpiresAt = blob.accessTokenExpiresAt
+        if renewed { acc.lastRefreshedAt = Date() }
         if let s = blob.subscriptionType { acc.subscriptionType = s }
         if let oa, let data = try? JSONSerialization.data(withJSONObject: oa, options: [.sortedKeys]) {
             acc.oauthAccount = data
@@ -373,51 +380,91 @@ final class AccountStore {
                 } else if !acc.hasSetupToken {
                     notifyOnce("expired-\(acc.id)", "Login của \(acc.email) đã hết hạn. Hãy đăng nhập lại hoặc thêm token dự phòng.")
                 }
-            } else if !state.autoKeepAlive, acc.id != state.activeId, exp.timeIntervalSinceNow < Self.keepAliveWindow {
-                notifyOnce("soon-\(acc.id)", "Login của \(acc.email) còn \(exp.daysFromNow) ngày. Bấm Làm mới hoặc dùng tài khoản này một lần.")
+            } else if !state.autoKeepAlive, exp.timeIntervalSinceNow < Self.keepAliveWindow {
+                notifyOnce("soon-\(acc.id)", "Login của \(acc.email) còn \(exp.daysFromNow) ngày. Bấm Gia hạn ngay hoặc bật tự gia hạn hằng ngày.")
             }
         }
     }
 
-    /// Called from inside a tick, so it queues the refresh instead of awaiting it.
+    /// Every logged-in account, active one included, is renewed at least once a
+    /// day. Each refresh pushes the login's expiry ~30 days out, so this keeps
+    /// all of them alive. A renewal Claude Code did on its own counts, and an
+    /// access token that is still valid means one happened within its ~8 h life.
+    static let renewInterval: TimeInterval = 24 * 3600
+    @ObservationIgnored private var renewing = false
+
+    func renewDue(_ acc: Account, now: Date = Date()) -> Bool {
+        guard acc.loginUsable, acc.hasLogin else { return false }
+        if let exp = acc.accessTokenExpiresAt, exp > now { return false }
+        guard let last = acc.lastRenewedAt else { return true }
+        return now.timeIntervalSince(last) >= Self.renewInterval
+    }
+
+    /// When the account is next due, for the UI.
+    func nextRenewal(_ acc: Account) -> Date? {
+        guard acc.loginUsable else { return nil }
+        let afterLast = acc.lastRenewedAt.map { $0.addingTimeInterval(Self.renewInterval) } ?? Date()
+        return max(afterLast, acc.accessTokenExpiresAt ?? .distantPast)
+    }
+
+    /// Called from inside a tick, so it queues the renewal instead of awaiting it;
+    /// one account per tick, the next one a minute later.
     private func keepAliveIfDue() {
-        let due = state.accounts.first { acc in
-            guard acc.id != state.activeId, acc.hasLogin, let exp = acc.refreshTokenExpiresAt,
-                  exp > Date(), exp.timeIntervalSinceNow < Self.keepAliveWindow else { return false }
-            return acc.lastKeepAliveAt.map { -$0.timeIntervalSinceNow > 20 * 3600 } ?? true
+        guard !renewing, let due = state.accounts.first(where: { renewDue($0) }) else { return }
+        renewing = true
+        Task {
+            await serial { await self.refreshLoginLocked(due.id, manual: false) }
+            renewing = false
         }
-        if let due { Task { await refreshLogin(due.id) } }
     }
 
-    /// Lets Claude Code itself refresh an idle account: runs one tiny `claude -p`
-    /// while it is live, keeps the rotated tokens, and reads its usage meanwhile.
     func refreshLogin(_ id: String) async {
-        await serial { await self.refreshLoginLocked(id) }
+        await serial { await self.refreshLoginLocked(id, manual: true) }
     }
 
-    private func refreshLoginLocked(_ id: String) async {
-        guard let acc = account(id) else { return }
+    /// Lets Claude Code itself refresh an account while it is live: first `/usage`
+    /// (free; Claude Code refreshes an expired token before calling the API), and
+    /// only if the tokens didn't change, one tiny haiku message.
+    private func refreshLoginLocked(_ id: String, manual: Bool) async {
+        guard let acc = account(id), acc.loginUsable else { return }
+        if let exp = acc.accessTokenExpiresAt, exp > Date() {
+            if manual {
+                announce("\(acc.title): token còn hạn đến \(Fmt.reset(exp)). Claude Code chỉ làm mới khi token hết hạn, nên chưa cần làm gì.", kind: .info)
+            }
+            return
+        }
         let before = acc.refreshTokenExpiresAt
-        var result: ShellResult?
+        // Right after launch savedRaw is empty; compare against the stored copy.
+        let beforeRaw: String?
+        if let cached = savedRaw[id] { beforeRaw = cached } else { beforeRaw = await io { Keychain.storedLogin(id) } }
         var usage: UsageSnapshot?
+        var ping: ShellResult?
         let ran = await withTemporarilyActiveLocked(id) {
-            result = await self.runClaude(["-p", "Reply with OK", "--model", "haiku", "--max-turns", "1"], timeout: 180)
-            if result?.status == 0 { usage = await self.fetchLiveUsage() }
+            self.usageLoading.insert(id)
+            usage = await self.fetchLiveUsage()
+            self.usageLoading.remove(id)
+            let live = await io { Keychain.readClaudeLogin() }
+            if live == beforeRaw {
+                ping = await self.runClaude(["-p", "Reply with OK", "--model", "haiku", "--max-turns", "1"], timeout: 180)
+            }
         }
         guard ran else { return }
+        let renewed = savedRaw[id] != beforeRaw
         update(id) {
-            $0.lastKeepAliveAt = Date()
+            if renewed { $0.lastKeepAliveAt = Date() }
             if let usage { $0.usage = usage }
         }
         save()
 
-        if let result, result.status == 0 {
-            let after = account(id)?.refreshTokenExpiresAt
-            announce("Đã làm mới \(acc.email): hạn login \(Fmt.date(before)) → \(Fmt.date(after))", kind: .success)
+        let after = account(id)?.refreshTokenExpiresAt
+        if renewed {
+            if manual {
+                announce("Đã gia hạn \(acc.title): hạn login \(Fmt.date(before)) → \(Fmt.date(after)).", kind: .success)
+            }
         } else {
-            let why = ((result?.stderr ?? "") + (result?.stdout ?? "Không tìm thấy lệnh claude"))
-                .trimmingCharacters(in: .whitespacesAndNewlines).prefix(200)
-            announce("Làm mới \(acc.email) lỗi: \(why)", kind: .error)
+            let why = ((ping?.stderr ?? "") + (ping?.stdout ?? "")).trimmingCharacters(in: .whitespacesAndNewlines).prefix(160)
+            let text = "Không gia hạn được \(acc.title)" + (why.isEmpty ? "." : ": \(why)")
+            if manual { announce(text, kind: .error) } else { notifyOnce("renew-fail-\(id)", text) }
         }
     }
 
@@ -437,7 +484,9 @@ final class AccountStore {
         guard await switchLocked(id, quiet: true, forceLogin: true) else { return false }
         await work()
         await syncLocked()
-        if let previous, previous != id { await switchLocked(previous, quiet: true) }
+        // Also when previous == id: forceLogin may have lifted a setup-token
+        // from settings.json, and switching back restores it.
+        if let previous { await switchLocked(previous, quiet: true) }
         save()
         return true
     }
@@ -694,8 +743,7 @@ final class AccountStore {
         guard let exp = acc.refreshTokenExpiresAt else { return (.good, "Đăng nhập tốt") }
         let days = max(exp.daysFromNow, 0)
         if exp.timeIntervalSinceNow < Self.keepAliveWindow {
-            if acc.id == state.activeId { return (.soon, "Còn \(days) ngày · tự gia hạn khi đang dùng") }
-            return (.soon, state.autoKeepAlive ? "Còn \(days) ngày · app sắp tự làm mới" : "Còn \(days) ngày · nên bấm Làm mới")
+            return (.soon, state.autoKeepAlive ? "Còn \(days) ngày · app sắp gia hạn" : "Còn \(days) ngày · nên bấm Gia hạn")
         }
         return (.good, "Đăng nhập tốt · còn \(days) ngày")
     }

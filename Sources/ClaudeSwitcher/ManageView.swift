@@ -214,17 +214,33 @@ struct AccountDetail: View {
             HealthLine(level: health.level, text: health.text)
             Text(loginExplanation(health.level))
                 .font(.callout).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            if account.loginUsable {
+                Grid(alignment: .leading, horizontalSpacing: 12, verticalSpacing: 4) {
+                    GridRow {
+                        Text("Gia hạn gần nhất").foregroundStyle(.secondary)
+                        Text(account.lastRenewedAt.map { Fmt.ago($0) } ?? "chưa ghi nhận")
+                    }
+                    GridRow {
+                        Text("Lần tới").foregroundStyle(.secondary)
+                        Text(nextRenewalText)
+                    }
+                    GridRow {
+                        Text("Hết hạn login").foregroundStyle(.secondary)
+                        Text(Fmt.date(account.refreshTokenExpiresAt))
+                    }
+                }
+                .font(.callout)
+            }
             HStack {
                 if health.level == .expired || !account.loginUsable {
                     Button("Đăng nhập lại") { store.addAccount(email: account.email) }
-                } else if !isActive {
-                    Button(store.busy ? "Đang làm mới…" : "Làm mới ngay") {
+                } else {
+                    Button(store.busy ? "Đang gia hạn…" : "Gia hạn ngay") {
                         Task { await store.refreshLogin(account.id) }
                     }
                     .disabled(store.busy)
                 }
                 Spacer()
-                Text("Hết hạn: \(Fmt.date(account.refreshTokenExpiresAt))").font(.caption).foregroundStyle(.secondary)
             }
         }
     }
@@ -232,14 +248,23 @@ struct AccountDetail: View {
     private func loginExplanation(_ level: AccountStore.HealthLevel) -> String {
         switch level {
         case .good, .soon:
+            guard store.state.autoKeepAlive else {
+                return "Tự gia hạn hằng ngày đang tắt. Bật lại trong ⚙ để login không bao giờ hết hạn."
+            }
             return isActive
-                ? "Tài khoản đang dùng tự gia hạn mỗi khi bạn dùng claude."
-                : "Khi tài khoản không dùng còn dưới 5 ngày, app tạm chuyển sang nó, chạy một lệnh claude rất nhỏ để gia hạn rồi chuyển lại."
+                ? "App gia hạn mọi tài khoản ít nhất 1 lần mỗi ngày, kể cả tài khoản đang dùng. Mỗi lần gia hạn đẩy hạn login thêm khoảng 30 ngày. Lượt nào Claude Code đã tự làm mới thì app bỏ qua."
+                : "App gia hạn mọi tài khoản ít nhất 1 lần mỗi ngày: tạm chuyển sang tài khoản này vài giây, đọc /usage (miễn phí) để Claude Code lấy token mới, rồi chuyển lại. Chỉ khi cách đó không đổi được token mới gửi 1 câu rất nhỏ bằng haiku."
         case .backup:
             return "Login thường đã hết hạn hoặc đang tắt, claude dùng token dự phòng. Đăng nhập lại để có đủ tính năng."
         case .expired:
             return "Login đã hết hạn và chưa có token dự phòng. Bấm Đăng nhập lại và chọn đúng \(account.email)."
         }
+    }
+
+    private var nextRenewalText: String {
+        guard store.state.autoKeepAlive else { return "tự gia hạn đang tắt" }
+        guard let next = store.nextRenewal(account), next > Date() else { return "trong vài phút tới" }
+        return Fmt.reset(next)
     }
 
     private var backupCard: some View {
