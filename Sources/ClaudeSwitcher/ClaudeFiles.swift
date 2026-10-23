@@ -44,8 +44,23 @@ enum ClaudeFiles {
         readJSON(globalConfig)?["oauthAccount"] as? [String: Any]
     }
 
+    /// oauthAccount as sorted JSON, re-parsing the ~120 KB file only when its
+    /// modification date moved since `cachedMTime`.
+    static func oauthAccountData(cachedMTime: Date?, cached: Data?) -> (mtime: Date?, data: Data?) {
+        let mtime = (try? FileManager.default.attributesOfItem(atPath: globalConfig.path))?[.modificationDate] as? Date
+        if let mtime, mtime == cachedMTime { return (mtime, cached) }
+        guard let oa = oauthAccount(),
+              let data = try? JSONSerialization.data(withJSONObject: oa, options: [.sortedKeys]) else { return (mtime, nil) }
+        return (mtime, data)
+    }
+
     static func setOauthAccount(_ raw: Data) throws {
         guard var cfg = readJSON(globalConfig) else { throw WriteError.unreadable(globalConfig) }
+        if let current = cfg["oauthAccount"],
+           let currentData = try? JSONSerialization.data(withJSONObject: current, options: [.sortedKeys]),
+           let wanted = try? JSONSerialization.jsonObject(with: raw),
+           let wantedData = try? JSONSerialization.data(withJSONObject: wanted, options: [.sortedKeys]),
+           currentData == wantedData { return }   // already right: skip rewriting 120 KB
         cfg["oauthAccount"] = try JSONSerialization.jsonObject(with: raw)
         try writeJSON(cfg, to: globalConfig)
     }

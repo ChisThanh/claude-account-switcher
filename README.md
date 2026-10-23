@@ -33,7 +33,7 @@ App lưu bản sao của từng tài khoản trong Keychain (dịch vụ `Claude
 
 App đọc usage bằng `claude -p /usage --no-session-persistence`. Đây là lệnh chạy cục bộ: không tốn lượt chat và không lưu lịch sử phiên.
 
-- **Tài khoản đang dùng:** đọc lại mỗi 3 phút, khi mở panel và ngay sau khi chuyển tài khoản.
+- **Tài khoản đang dùng:** khi mở panel hoặc cửa sổ thì đọc lại nếu số liệu cũ hơn 60 giây (mỗi 3 phút khi cửa sổ vẫn mở), và ngay sau khi chuyển tài khoản. Khi chạy ngầm thì 15 phút một lần, ở mức ưu tiên thấp, vì mỗi lần tốn khoảng 6 giây CPU.
 - **Tài khoản khác:** hiện lần đọc gần nhất. Phần nào đã qua giờ reset thì tính về 0%. Nút ↻ tạm chuyển sang tài khoản đó vài giây để đọc rồi chuyển lại. Lần tự làm mới login cũng đọc luôn usage.
 - **Gợi ý chuyển tài khoản:** khi tài khoản đang dùng đã dùng từ 80% trở lên, panel gợi ý tài khoản còn nhiều hạn mức nhất.
 - Token dự phòng không đọc được usage của gói, vì nó không có quyền đọc hồ sơ tài khoản.

@@ -1,7 +1,7 @@
 import SwiftUI
 
 struct MenuPanel: View {
-    @EnvironmentObject var store: AccountStore
+    @Environment(AccountStore.self) private var store
     @Environment(\.dismiss) private var dismiss
 
     private var others: [Account] { store.state.accounts.filter { $0.id != store.state.activeId } }
@@ -63,7 +63,8 @@ struct MenuPanel: View {
         }
         .padding(14)
         .frame(width: 380)
-        .onAppear { store.refreshActiveUsage(maxAge: 60) }
+        .onAppear { store.viewAppeared() }
+        .onDisappear { store.viewDisappeared() }
     }
 
     private var header: some View {
@@ -120,7 +121,7 @@ struct MenuPanel: View {
 }
 
 struct AccountRow: View {
-    @EnvironmentObject var store: AccountStore
+    @Environment(AccountStore.self) private var store
     let account: Account
     @State private var hovering = false
 
@@ -163,7 +164,7 @@ struct AccountRow: View {
 }
 
 struct SettingsMenu: View {
-    @EnvironmentObject var store: AccountStore
+    @Environment(AccountStore.self) private var store
 
     var body: some View {
         Menu {

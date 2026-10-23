@@ -1,5 +1,6 @@
 import AppKit
 import Foundation
+import Observation
 import ServiceManagement
 import UserNotifications
 
@@ -9,37 +10,65 @@ struct Banner: Equatable {
     let text: String
 }
 
+/// Keychain (/usr/bin/security), ps and the 120 KB ~/.claude.json are 10–20 ms
+/// each; they run here, never on the main thread.
+private func io<T: Sendable>(_ work: @escaping @Sendable () -> T) async -> T {
+    await Task.detached(priority: .userInitiated) { work() }.value
+}
+
+private func ioThrowing(_ work: @escaping @Sendable () throws -> Void) async throws {
+    try await Task.detached(priority: .userInitiated) { try work() }.value
+}
+
+private struct LiveRead: Sendable {
+    let raw: String?
+    let configMTime: Date?
+    let oauthAccount: Data?
+}
+
 @MainActor
-final class AccountStore: ObservableObject {
+@Observable
+final class AccountStore {
     static let shared = AccountStore()
 
-    @Published private(set) var state = AppState()
-    @Published private(set) var banner: Banner?
-    @Published private(set) var busy = false
+    private(set) var state = AppState()
+    private(set) var banner: Banner?
+    private(set) var busy = false
     /// Set while `claude auth login` runs in Terminal; cleared when the new login shows up.
-    @Published private(set) var addingSince: Date?
+    private(set) var addingSince: Date?
     /// claude processes that were running at the last switch and still hold the old account.
-    @Published private(set) var staleSessions: Set<Int32> = []
+    private(set) var staleSessions: Set<Int32> = []
     /// Accounts whose usage is being read right now.
-    @Published private(set) var usageLoading: Set<String> = []
+    private(set) var usageLoading: Set<String> = []
+    private(set) var launchAtLogin = SMAppService.mainApp.status == .enabled
+    /// True when no state file existed at startup.
+    private(set) var isFirstLaunch = false
 
     /// Idle accounts whose login expires within this window get refreshed.
     static let keepAliveWindow: TimeInterval = 5 * 86400
+    /// `/usage` costs ~6 s of CPU, so with nothing on screen it runs this rarely.
+    static let idleUsageInterval: TimeInterval = 15 * 60
 
     private let dir: URL
     private var stateURL: URL { dir.appendingPathComponent("state.json") }
-    private var lastSaved: AppState?
-    private var savedRaw: [String: String] = [:]   // login blob last stored per account; skips keychain calls
-    private var notified: [String: Date] = [:]
-    private var lastHealthCheck = Date.distantPast
-    private var lastLiveRaw: String?
-    private var liveRawChangedAt = Date.distantPast
-    private var addingBaseline: String?
-    private var addingEmail: String?
-    private var timer: Timer?
+    private static let saveQueue = DispatchQueue(label: "ClaudeSwitcher.save", qos: .utility)
 
-    /// True when no state file existed at startup.
-    private(set) var isFirstLaunch = false
+    @ObservationIgnored private var lastSaved: AppState?
+    @ObservationIgnored private var savedRaw: [String: String] = [:]   // login blob last stored per account
+    @ObservationIgnored private var setupTokens: [String: String] = [:] // keychain cache, saves a `security` call each
+    @ObservationIgnored private var notified: [String: Date] = [:]
+    @ObservationIgnored private var lastHealthCheck = Date.distantPast
+    @ObservationIgnored private var lastSync = Date.distantPast
+    @ObservationIgnored private var lastLiveRaw: String?
+    @ObservationIgnored private var liveRawChangedAt = Date.distantPast
+    @ObservationIgnored private var configMTime: Date?
+    @ObservationIgnored private var cachedOauthAccount: Data?
+    @ObservationIgnored private var addingBaseline: String?
+    @ObservationIgnored private var addingEmail: String?
+    @ObservationIgnored private var visibleViews = 0
+    @ObservationIgnored private var ticking = false
+    @ObservationIgnored private var queueTail: Task<Void, Never>?
+    @ObservationIgnored private var timer: Timer?
 
     private init() {
         dir = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
@@ -47,40 +76,85 @@ final class AccountStore: ObservableObject {
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         load()
         isFirstLaunch = lastSaved == nil
-        recoverHalfSavedSetupTokens()
         UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound]) { _, _ in }
-        tick()
-        // 5 s keeps "add account" and the restart hint responsive; the heavier
-        // health and keep-alive checks run once a minute inside tick().
-        timer = Timer.scheduledTimer(withTimeInterval: 5, repeats: true) { [weak self] _ in
+
+        let t = Timer(timeInterval: 3, repeats: true) { [weak self] _ in
             Task { @MainActor in self?.tick() }
+        }
+        t.tolerance = 1
+        RunLoop.main.add(t, forMode: .common)
+        timer = t
+
+        Task {
+            await serial { await self.recoverHalfSavedSetupTokens() }
+            tick(force: true)
         }
     }
 
     var active: Account? { state.activeId.flatMap(account) }
     func account(_ id: String) -> Account? { state.accounts.first { $0.id == id } }
 
-    static var claudePath: String? {
+    nonisolated static var claudePath: String? {
         let home = FileManager.default.homeDirectoryForCurrentUser.path
         return ["\(home)/.local/bin/claude", "/opt/homebrew/bin/claude", "/usr/local/bin/claude"]
             .first { FileManager.default.isExecutableFile(atPath: $0) }
     }
 
+    // MARK: Scheduling
+
+    /// Runs store operations one at a time. They await keychain and file IO off
+    /// the main thread and must not interleave (a tick's sync inside a switch).
+    /// Operations already inside `serial` call the `…Locked` functions directly.
+    private func serial<T: Sendable>(_ op: @escaping @MainActor () async -> T) async -> T {
+        let previous = queueTail
+        let task = Task { @MainActor in
+            await previous?.value
+            return await op()
+        }
+        queueTail = Task { _ = await task.value }
+        return await task.value
+    }
+
+    /// The panel and the window report while they are on screen; syncing is fast
+    /// then (and while a login is pending), lazy otherwise.
+    func viewAppeared() {
+        visibleViews += 1
+        tick(force: true)
+        refreshActiveUsage(maxAge: 60)
+    }
+
+    func viewDisappeared() { visibleViews = max(0, visibleViews - 1) }
+
     func tick(force: Bool = false) {
-        guard !busy else { return }
-        sync()
-        if !staleSessions.isEmpty { staleSessions.formIntersection(Self.runningClaudePids()) }
-        if let since = addingSince, -since.timeIntervalSinceNow > 15 * 60 { addingSince = nil }
-        refreshActiveUsage()
+        guard !ticking, !busy else { return }
+        let fast = visibleViews > 0 || addingSince != nil || !staleSessions.isEmpty
+        guard force || -lastSync.timeIntervalSinceNow >= (fast ? 2.5 : 15) else { return }
+        ticking = true
+        Task {
+            await serial { await self.tickLocked(force: force) }
+            ticking = false
+        }
+    }
+
+    private func tickLocked(force: Bool) async {
+        lastSync = Date()
+        await syncLocked()
+        if !staleSessions.isEmpty {
+            let alive = await io { Self.runningClaudePids() }
+            let still = staleSessions.intersection(alive)
+            if still != staleSessions { staleSessions = still }
+        }
+        if let since = addingSince, -since.timeIntervalSinceNow > 15 * 60 { cancelAdding() }
+        refreshActiveUsage(maxAge: visibleViews > 0 ? 180 : Self.idleUsageInterval)
         guard force || -lastHealthCheck.timeIntervalSinceNow >= 60 else { return }
         lastHealthCheck = Date()
-        checkHealth()
+        await checkHealthLocked()
         if state.autoKeepAlive { keepAliveIfDue() }
     }
 
     /// Terminal (`~/.local/share/claude/versions/…`) and IDE-extension
     /// (`…/native-binary/claude`) Claude Code processes.
-    static func runningClaudePids() -> Set<Int32> {
+    nonisolated static func runningClaudePids() -> Set<Int32> {
         let r = Shell.run("/bin/ps", ["-axo", "pid=,comm="])
         var pids = Set<Int32>()
         for line in r.stdout.split(separator: "\n") {
@@ -96,21 +170,34 @@ final class AccountStore: ObservableObject {
 
     // MARK: Sync with Claude Code
 
+    private func readLive() async -> (raw: String?, oauthAccount: [String: Any]?) {
+        let mtime = configMTime, cached = cachedOauthAccount
+        let live = await io {
+            let raw = Keychain.readClaudeLogin()
+            let oa = ClaudeFiles.oauthAccountData(cachedMTime: mtime, cached: cached)
+            return LiveRead(raw: raw, configMTime: oa.mtime, oauthAccount: oa.data)
+        }
+        configMTime = live.configMTime
+        cachedOauthAccount = live.oauthAccount
+        let oa = live.oauthAccount.flatMap { (try? JSONSerialization.jsonObject(with: $0)) as? [String: Any] }
+        return (live.raw, oa)
+    }
+
     /// Reconciles the live login (keychain + ~/.claude.json) with the store: keeps
     /// the tokens Claude Code rotated, adopts logins made with `claude auth login`,
     /// and undoes a still-running session writing an older account's tokens back.
-    func sync() {
+    private func syncLocked() async {
         defer { save() }
-        guard let raw = Keychain.readClaudeLogin(), let blob = LoginBlob(raw: raw) else { return }
+        let live = await readLive()
+        guard let raw = live.raw, let blob = LoginBlob(raw: raw) else { return }
         if raw != lastLiveRaw {
             if lastLiveRaw != nil { liveRawChangedAt = Date() }
             lastLiveRaw = raw
         }
-        let oa = ClaudeFiles.oauthAccount()
 
-        if let oa, let oaId = oa["accountUuid"] as? String, describesSameLogin(blob, oa) {
+        if let oa = live.oauthAccount, let oaId = oa["accountUuid"] as? String, describesSameLogin(blob, oa) {
             let isNew = account(oaId) == nil
-            store(blob, for: oaId, oauthAccount: oa)
+            await storeLogin(blob, for: oaId, oauthAccount: oa)
             guard let acc = account(oaId) else { return }
             // A fresh login has no organizationUuid yet; a routine refresh does.
             if addingSince != nil, raw != addingBaseline, isNew || blob.organizationUuid == nil {
@@ -118,11 +205,10 @@ final class AccountStore: ObservableObject {
             }
             if state.activeId != oaId {
                 state.activeId = oaId
-                try? applyEnvMode(for: acc)
-                announce(isNew ? "Đã thêm \(acc.email) và đang dùng tài khoản này." : "Claude đang dùng \(acc.email).",
-                         kind: .success)
+                try? await applyEnvMode(for: acc)
+                if !isNew { announce("Claude đang dùng \(acc.email).", kind: .success) }
             } else if state.activeUsesSetupToken, acc.loginUsable, !acc.preferSetupToken {
-                try? applyEnvMode(for: acc)   // logged in again: back to the full login
+                try? await applyEnvMode(for: acc)   // logged in again: back to the full login
             }
             return
         }
@@ -130,13 +216,19 @@ final class AccountStore: ObservableObject {
         // Keychain and ~/.claude.json disagree: a session still on an older account
         // refreshed its token. Keep those tokens, then put the active account back.
         guard let owner = ownerOf(blob) else { return }
-        store(blob, for: owner.id, oauthAccount: nil)
+        await storeLogin(blob, for: owner.id, oauthAccount: nil)
         guard let active else { return }
         if active.id != owner.id {
-            if let r = Keychain.storedLogin(active.id), Keychain.writeClaudeLogin(r) { savedRaw[active.id] = r }
+            let id = active.id
+            let written = await io { Keychain.storedLogin(id).flatMap { Keychain.writeClaudeLogin($0) ? $0 : nil } }
+            if let written {
+                savedRaw[id] = written
+                lastLiveRaw = written
+            }
             notifyOnce("stale-\(owner.id)", "Một phiên Claude cũ vẫn chạy bằng \(owner.email). Đã đặt lại \(active.email) — hãy khởi động lại phiên đó.")
         }
-        try? ClaudeFiles.setOauthAccount(active.oauthAccount)
+        let data = active.oauthAccount
+        _ = await io { try? ClaudeFiles.setOauthAccount(data) }
     }
 
     /// Token refreshes carry the organization, so it must match. A fresh
@@ -151,8 +243,7 @@ final class AccountStore: ObservableObject {
 
     private func finishAdding(_ acc: Account, isNew: Bool) {
         let relogin = addingEmail?.caseInsensitiveCompare(acc.email) == .orderedSame
-        addingSince = nil
-        addingEmail = nil
+        cancelAdding()
         if isNew {
             announce("Đã thêm \(acc.email) và đang dùng tài khoản này.", kind: .success)
         } else if relogin {
@@ -168,13 +259,12 @@ final class AccountStore: ObservableObject {
         return matches.count == 1 ? matches[0] : nil
     }
 
-    private func store(_ blob: LoginBlob, for id: String, oauthAccount oa: [String: Any]?) {
+    private func storeLogin(_ blob: LoginBlob, for id: String, oauthAccount oa: [String: Any]?) async {
         if savedRaw[id] != blob.raw {
-            if Keychain.storedLogin(id) != blob.raw, !Keychain.saveLogin(id, blob.raw) {
-                announce("Không lưu được login vào Keychain", kind: .error)
-                return
-            }
-            savedRaw[id] = blob.raw
+            let raw = blob.raw
+            let ok = await io { Keychain.storedLogin(id) == raw || Keychain.saveLogin(id, raw) }
+            guard ok else { return announce("Không lưu được login vào Keychain", kind: .error) }
+            savedRaw[id] = raw
         }
         var acc = account(id) ?? Account(id: id, email: "", organizationUuid: blob.organizationUuid ?? "",
                                          oauthAccount: Data(), hasLogin: true, preferSetupToken: false)
@@ -193,33 +283,43 @@ final class AccountStore: ObservableObject {
 
     // MARK: Switching
 
+    func switchTo(_ id: String) {
+        Task { await serial { await self.switchLocked(id, quiet: false) } }
+    }
+
     @discardableResult
-    func switchTo(_ id: String, quiet: Bool = false, forceLogin: Bool = false) -> Bool {
-        sync()
+    private func switchLocked(_ id: String, quiet: Bool, forceLogin: Bool = false) async -> Bool {
+        await syncLocked()
         guard let acc = account(id) else { return false }
         if !acc.loginUsable && !acc.hasSetupToken {
             announce("\(acc.email): login đã hết hạn và chưa có token dự phòng. Hãy đăng nhập lại.", kind: .error)
             return false
         }
-        do {
-            if let raw = Keychain.storedLogin(id) {
-                guard Keychain.writeClaudeLogin(raw) else {
-                    announce("Không ghi được login vào Keychain", kind: .error)
-                    return false
-                }
-                savedRaw[id] = raw
+        let (hadLogin, written) = await io { () -> (Bool, String?) in
+            guard let raw = Keychain.storedLogin(id) else { return (false, nil) }
+            return (true, Keychain.writeClaudeLogin(raw) ? raw : nil)
+        }
+        if hadLogin {
+            guard let written else {
+                announce("Không ghi được login vào Keychain", kind: .error)
+                return false
             }
-            try ClaudeFiles.setOauthAccount(acc.oauthAccount)
-            try applyEnvMode(for: acc, forceLogin: forceLogin)
+            savedRaw[id] = written
+            lastLiveRaw = written   // our own write, not an outside login
+        }
+        do {
+            let data = acc.oauthAccount
+            try await ioThrowing { try ClaudeFiles.setOauthAccount(data) }
+            try await applyEnvMode(for: acc, forceLogin: forceLogin)
         } catch {
             announce(error.localizedDescription, kind: .error)
             return false
         }
-        state.activeId = id
+        if state.activeId != id { state.activeId = id }
         update(id) { $0.lastUsedAt = Date() }
         save()
         if !quiet {
-            staleSessions = Self.runningClaudePids()
+            staleSessions = await io { Self.runningClaudePids() }
             let mode = state.activeUsesSetupToken ? " bằng token dự phòng" : ""
             announce("Đã chuyển sang \(acc.title)\(mode).", kind: .success)
             refreshActiveUsage(maxAge: 0)
@@ -227,27 +327,39 @@ final class AccountStore: ObservableObject {
         return true
     }
 
+    private func setupToken(_ id: String) async -> String? {
+        if let t = setupTokens[id] { return t }
+        let t = await io { Keychain.setupToken(id) }
+        if let t { setupTokens[id] = t }
+        return t
+    }
+
+    private func setActiveUsesSetupToken(_ on: Bool) {
+        if state.activeUsesSetupToken != on { state.activeUsesSetupToken = on }
+    }
+
     /// settings.json carries the setup-token only while the login can't be used
     /// (or the account is set to always use it).
-    private func applyEnvMode(for acc: Account, forceLogin: Bool = false) throws {
+    private func applyEnvMode(for acc: Account, forceLogin: Bool = false) async throws {
         let wantSetup = !forceLogin && (acc.preferSetupToken || !acc.loginUsable)
-        if wantSetup, let token = Keychain.setupToken(acc.id) {
-            try ClaudeFiles.setEnvToken(token)
-            state.activeUsesSetupToken = true
+        if wantSetup, let token = await setupToken(acc.id) {
+            try await ioThrowing { try ClaudeFiles.setEnvToken(token) }
+            setActiveUsesSetupToken(true)
             return
         }
-        state.activeUsesSetupToken = false
-        guard let current = ClaudeFiles.envToken() else { return }
-        if state.accounts.contains(where: { $0.hasSetupToken && Keychain.setupToken($0.id) == current }) {
-            try ClaudeFiles.setEnvToken(nil)
-        } else {
-            announce("~/.claude/settings.json có \(ClaudeFiles.envKey) không do app đặt — nó đang đè lên login.", kind: .error)
+        setActiveUsesSetupToken(false)
+        guard let current = await io({ ClaudeFiles.envToken() }) else { return }
+        for other in state.accounts where other.hasSetupToken {
+            if await setupToken(other.id) == current {
+                return try await ioThrowing { try ClaudeFiles.setEnvToken(nil) }
+            }
         }
+        announce("~/.claude/settings.json có \(ClaudeFiles.envKey) không do app đặt — nó đang đè lên login.", kind: .error)
     }
 
     // MARK: Keep-alive
 
-    private func checkHealth() {
+    private func checkHealthLocked() async {
         for acc in state.accounts {
             if let exp = acc.setupTokenExpiresAt, exp.daysFromNow < 30 {
                 notifyOnce("setup-\(acc.id)", "Token dự phòng của \(acc.email) còn khoảng \(max(exp.daysFromNow, 0)) ngày. Hãy chạy lại claude setup-token.")
@@ -255,7 +367,7 @@ final class AccountStore: ObservableObject {
             guard let exp = acc.refreshTokenExpiresAt else { continue }
             if exp <= Date() {
                 if acc.id == state.activeId, !state.activeUsesSetupToken, acc.hasSetupToken {
-                    try? applyEnvMode(for: acc)
+                    try? await applyEnvMode(for: acc)
                     save()
                     notifyOnce("fallback-\(acc.id)", "Login của \(acc.email) đã hết hạn — đã chuyển sang token dự phòng.")
                 } else if !acc.hasSetupToken {
@@ -267,6 +379,7 @@ final class AccountStore: ObservableObject {
         }
     }
 
+    /// Called from inside a tick, so it queues the refresh instead of awaiting it.
     private func keepAliveIfDue() {
         let due = state.accounts.first { acc in
             guard acc.id != state.activeId, acc.hasLogin, let exp = acc.refreshTokenExpiresAt,
@@ -279,11 +392,15 @@ final class AccountStore: ObservableObject {
     /// Lets Claude Code itself refresh an idle account: runs one tiny `claude -p`
     /// while it is live, keeps the rotated tokens, and reads its usage meanwhile.
     func refreshLogin(_ id: String) async {
+        await serial { await self.refreshLoginLocked(id) }
+    }
+
+    private func refreshLoginLocked(_ id: String) async {
         guard let acc = account(id) else { return }
         let before = acc.refreshTokenExpiresAt
         var result: ShellResult?
         var usage: UsageSnapshot?
-        let ran = await withTemporarilyActive(id) {
+        let ran = await withTemporarilyActiveLocked(id) {
             result = await self.runClaude(["-p", "Reply with OK", "--model", "haiku", "--max-turns", "1"], timeout: 180)
             if result?.status == 0 { usage = await self.fetchLiveUsage() }
         }
@@ -306,30 +423,36 @@ final class AccountStore: ObservableObject {
 
     /// Makes an idle account the live login for a few seconds, runs `work`, keeps
     /// whatever tokens Claude Code rotated, and switches back.
-    private func withTemporarilyActive(_ id: String, _ work: () async -> Void) async -> Bool {
-        guard !busy, usageLoading.isEmpty else { return false }
+    private func withTemporarilyActiveLocked(_ id: String, _ work: () async -> Void) async -> Bool {
+        guard !busy else { return false }
         busy = true
         defer { busy = false }
+        // A background /usage read of the active account must finish first, or
+        // its numbers could land on the wrong account.
+        let deadline = Date().addingTimeInterval(70)
+        while !usageLoading.isEmpty, Date() < deadline {
+            try? await Task.sleep(for: .milliseconds(200))
+        }
         let previous = state.activeId
-        guard switchTo(id, quiet: true, forceLogin: true) else { return false }
+        guard await switchLocked(id, quiet: true, forceLogin: true) else { return false }
         await work()
-        sync()
-        if let previous, previous != id { switchTo(previous, quiet: true) }
+        await syncLocked()
+        if let previous, previous != id { await switchLocked(previous, quiet: true) }
         save()
         return true
     }
 
     /// Runs the claude CLI against the live login (never a setup-token from the
-    /// environment), without saving a session transcript.
+    /// environment), without saving a session transcript, at low priority.
     private func runClaude(_ args: [String], timeout: TimeInterval) async -> ShellResult? {
         guard let claude = Self.claudePath else { return nil }
         var env = ProcessInfo.processInfo.environment
         for key in [ClaudeFiles.envKey, "CLAUDE_CONFIG_DIR", "ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN"] { env[key] = nil }
         let runEnv = env
         let home = FileManager.default.homeDirectoryForCurrentUser
-        return await Task.detached {
+        return await Task.detached(priority: .utility) {
             Shell.run(claude, args + ["--no-session-persistence", "--strict-mcp-config"],
-                      env: runEnv, cwd: home, timeout: timeout)
+                      env: runEnv, cwd: home, timeout: timeout, qos: .utility)
         }.value
     }
 
@@ -338,17 +461,21 @@ final class AccountStore: ObservableObject {
     /// `/usage` is a local command: no model turn, nothing billed. It reads the
     /// plan limits of the live login; a setup-token can't (no profile scope).
     private func fetchLiveUsage() async -> UsageSnapshot? {
-        guard let r = await runClaude(["-p", "/usage", "--output-format", "json"], timeout: 60), r.status == 0,
-              let obj = (try? JSONSerialization.jsonObject(with: Data(r.stdout.utf8))) as? [String: Any],
-              let text = obj["result"] as? String else { return nil }
-        return UsageParser.parse(text)
+        guard let r = await runClaude(["-p", "/usage", "--output-format", "json"], timeout: 60), r.status == 0 else { return nil }
+        let out = r.stdout
+        return await io {
+            guard let obj = (try? JSONSerialization.jsonObject(with: Data(out.utf8))) as? [String: Any],
+                  let text = obj["result"] as? String else { return nil }
+            return UsageParser.parse(text)
+        }
     }
 
     func canReadUsage(_ acc: Account) -> Bool {
         acc.loginUsable && !(acc.id == state.activeId && state.activeUsesSetupToken)
     }
 
-    /// The active account's usage, at most every `maxAge` seconds unless forced.
+    /// The active account's usage when the last read is older than `maxAge`. Not
+    /// serialized: it only reads, and drops the result if the account changed.
     func refreshActiveUsage(maxAge: TimeInterval = 180) {
         guard let acc = active, canReadUsage(acc), !busy, !usageLoading.contains(acc.id) else { return }
         if let u = acc.usage, -u.fetchedAt.timeIntervalSinceNow < maxAge { return }
@@ -356,8 +483,6 @@ final class AccountStore: ObservableObject {
         Task {
             let snap = await fetchLiveUsage()
             usageLoading.remove(acc.id)
-            // The CLI read whichever login was live when it started; drop the result
-            // if the user switched meanwhile.
             guard let snap, state.activeId == acc.id else { return }
             update(acc.id) { $0.usage = snap }
             save()
@@ -371,18 +496,20 @@ final class AccountStore: ObservableObject {
             return announce("\(acc.title): cần login thường còn hạn để đọc usage.", kind: .warning)
         }
         if id == state.activeId { return refreshActiveUsage(maxAge: 0) }
-        var snap: UsageSnapshot?
-        let ran = await withTemporarilyActive(id) {
-            self.usageLoading.insert(id)
-            snap = await self.fetchLiveUsage()
-            self.usageLoading.remove(id)
-        }
-        guard ran else { return }
-        if let snap {
-            update(id) { $0.usage = snap }
-            save()
-        } else {
-            announce("Không đọc được usage của \(acc.title).", kind: .error)
+        await serial {
+            var snap: UsageSnapshot?
+            let ran = await self.withTemporarilyActiveLocked(id) {
+                self.usageLoading.insert(id)
+                snap = await self.fetchLiveUsage()
+                self.usageLoading.remove(id)
+            }
+            guard ran else { return }
+            if let snap {
+                self.update(id) { $0.usage = snap }
+                self.save()
+            } else {
+                self.announce("Không đọc được usage của \(acc.title).", kind: .error)
+            }
         }
     }
 
@@ -408,24 +535,29 @@ final class AccountStore: ObservableObject {
     /// Runs `claude auth login` in Terminal; with an email it pre-fills the page
     /// (used to log an expired account back in).
     func addAccount(email: String? = nil) {
-        sync()
         guard let claude = Self.claudePath else { return announce("Không tìm thấy lệnh claude", kind: .error) }
-        var command = """
-            echo 'Trình duyệt sẽ mở trang đăng nhập Claude.'
-            echo 'Nếu nó tự dùng tài khoản claude.ai đang đăng nhập sẵn mà bạn muốn tài khoản KHÁC:'
-            echo '  copy link bên dưới và mở trong cửa sổ ẩn danh (Cmd+Shift+N), hoặc đăng xuất claude.ai trước.'
-            echo
-            '\(claude)' auth login
-            """
-        if let email { command += " --email '\(email.replacingOccurrences(of: "'", with: ""))'" }
-        openInTerminal("login", command)
-        addingBaseline = Keychain.readClaudeLogin()
-        addingEmail = email
-        addingSince = Date()
+        Task {
+            await serial {
+                await self.syncLocked()
+                // Baseline first: the wait only starts once there is something to compare against.
+                self.addingBaseline = await io { Keychain.readClaudeLogin() }
+                self.addingSince = Date()
+                self.addingEmail = email
+                var command = """
+                    echo 'Trình duyệt sẽ mở trang đăng nhập Claude.'
+                    echo 'Nếu nó tự dùng tài khoản claude.ai đang đăng nhập sẵn mà bạn muốn tài khoản KHÁC:'
+                    echo '  copy link bên dưới và mở trong cửa sổ ẩn danh (Cmd+Shift+N), hoặc đăng xuất claude.ai trước.'
+                    echo
+                    '\(claude)' auth login
+                    """
+                if let email { command += " --email '\(email.replacingOccurrences(of: "'", with: ""))'" }
+                self.openInTerminal("login", command)
+            }
+        }
     }
 
     func cancelAdding() {
-        addingSince = nil
+        if addingSince != nil { addingSince = nil }
         addingEmail = nil
     }
 
@@ -437,7 +569,7 @@ final class AccountStore: ObservableObject {
     /// `claude setup-token` prints the token wrapped across lines, so a copy from
     /// Terminal carries a newline and indent in the middle. Tokens never contain
     /// whitespace: drop all of it, then require the token's shape.
-    static func cleanSetupToken(_ text: String) -> String? {
+    nonisolated static func cleanSetupToken(_ text: String) -> String? {
         let t = String(text.unicodeScalars.filter { !CharacterSet.whitespacesAndNewlines.contains($0) })
         guard t.hasPrefix("sk-ant-oat"), t.count >= 40,
               t.unicodeScalars.allSatisfy({ CharacterSet.alphanumerics.contains($0) || $0 == "-" || $0 == "_" })
@@ -448,21 +580,28 @@ final class AccountStore: ObservableObject {
     /// Before tokens were cleaned, a pasted token with a line break was written to
     /// the keychain but reported as failed. `security -w` prints such a value as
     /// hex; decode it, clean it and keep it.
-    private func recoverHalfSavedSetupTokens() {
+    private func recoverHalfSavedSetupTokens() async {
         for acc in state.accounts where !acc.hasSetupToken {
-            guard var stored = Keychain.setupToken(acc.id) else { continue }
-            if stored.count % 2 == 0, stored.allSatisfy(\.isHexDigit) {
-                var bytes = [UInt8]()
-                var i = stored.startIndex
-                while i < stored.endIndex {
-                    let j = stored.index(i, offsetBy: 2)
-                    bytes.append(UInt8(stored[i..<j], radix: 16) ?? 0)
-                    i = j
+            let id = acc.id
+            let recovered = await io { () -> String? in
+                guard var stored = Keychain.setupToken(id) else { return nil }
+                if stored.count % 2 == 0, stored.allSatisfy(\.isHexDigit) {
+                    var bytes = [UInt8]()
+                    var i = stored.startIndex
+                    while i < stored.endIndex {
+                        let j = stored.index(i, offsetBy: 2)
+                        bytes.append(UInt8(stored[i..<j], radix: 16) ?? 0)
+                        i = j
+                    }
+                    stored = String(decoding: bytes, as: UTF8.self)
                 }
-                stored = String(decoding: bytes, as: UTF8.self)
+                guard let token = AccountStore.cleanSetupToken(stored), Keychain.saveSetupToken(id, token) else { return nil }
+                return token
             }
-            guard let token = Self.cleanSetupToken(stored), Keychain.saveSetupToken(acc.id, token) else { continue }
-            update(acc.id) { $0.setupTokenAddedAt = Date() }
+            guard let recovered else { continue }
+            setupTokens[id] = recovered
+            update(id) { $0.setupTokenAddedAt = Date() }
+            save()
             announce("Đã khôi phục token dự phòng đã dán cho \(acc.email).", kind: .success)
         }
     }
@@ -472,34 +611,45 @@ final class AccountStore: ObservableObject {
         openInTerminal("setup-token", "'\(claude)' setup-token")
     }
 
-    @discardableResult
-    func saveSetupToken(_ token: String, for id: String) -> Bool {
+    func saveSetupToken(_ token: String, for id: String) async -> Bool {
         guard let t = Self.cleanSetupToken(token) else {
             announce("Đây không phải token của claude setup-token. Token bắt đầu bằng sk-ant-oat01-, chỉ gồm chữ, số, - và _.", kind: .error)
             return false
         }
-        guard Keychain.saveSetupToken(id, t) else {
-            announce("Không lưu được token vào Keychain", kind: .error)
-            return false
+        return await serial {
+            guard await io({ Keychain.saveSetupToken(id, t) }) else {
+                self.announce("Không lưu được token vào Keychain", kind: .error)
+                return false
+            }
+            self.setupTokens[id] = t
+            self.update(id) { $0.setupTokenAddedAt = Date() }
+            if id == self.state.activeId, let acc = self.account(id) { try? await self.applyEnvMode(for: acc) }
+            self.save()
+            self.announce("Đã lưu token dự phòng cho \(self.account(id)?.email ?? "")", kind: .success)
+            return true
         }
-        update(id) { $0.setupTokenAddedAt = Date() }
-        if id == state.activeId, let acc = account(id) { try? applyEnvMode(for: acc) }
-        save()
-        announce("Đã lưu token dự phòng cho \(account(id)?.email ?? "")", kind: .success)
-        return true
     }
 
     func removeSetupToken(_ id: String) {
-        update(id) { $0.setupTokenAddedAt = nil; $0.preferSetupToken = false }
-        if id == state.activeId, let acc = account(id) { try? applyEnvMode(for: acc) }
-        Keychain.delete(service: Keychain.storeService, account: "\(id).setup")
-        save()
+        Task {
+            await serial {
+                self.update(id) { $0.setupTokenAddedAt = nil; $0.preferSetupToken = false }
+                if id == self.state.activeId, let acc = self.account(id) { try? await self.applyEnvMode(for: acc) }
+                self.setupTokens[id] = nil
+                await io { Keychain.delete(service: Keychain.storeService, account: "\(id).setup") }
+                self.save()
+            }
+        }
     }
 
     func setPreferSetupToken(_ on: Bool, for id: String) {
         update(id) { $0.preferSetupToken = on }
-        if id == state.activeId, let acc = account(id) { try? applyEnvMode(for: acc) }
         save()
+        Task {
+            await serial {
+                if id == self.state.activeId, let acc = self.account(id) { try? await self.applyEnvMode(for: acc) }
+            }
+        }
     }
 
     func setLabel(_ label: String, for id: String) {
@@ -508,19 +658,18 @@ final class AccountStore: ObservableObject {
     }
 
     func setAutoKeepAlive(_ on: Bool) {
-        state.autoKeepAlive = on
+        if state.autoKeepAlive != on { state.autoKeepAlive = on }
         save()
     }
 
     func remove(_ id: String) {
         guard id != state.activeId else { return }
-        Keychain.forget(id)
         savedRaw[id] = nil
+        setupTokens[id] = nil
         state.accounts.removeAll { $0.id == id }
         save()
+        Task { await io { Keychain.forget(id) } }
     }
-
-    var launchAtLogin: Bool { SMAppService.mainApp.status == .enabled }
 
     func setLaunchAtLogin(_ on: Bool) {
         do {
@@ -528,7 +677,7 @@ final class AccountStore: ObservableObject {
         } catch {
             announce("Không đổi được mở cùng macOS: \(error.localizedDescription)", kind: .error)
         }
-        objectWillChange.send()
+        launchAtLogin = SMAppService.mainApp.status == .enabled
     }
 
     enum HealthLevel { case good, soon, backup, expired }
@@ -551,16 +700,14 @@ final class AccountStore: ObservableObject {
         return (.good, "Đăng nhập tốt · còn \(days) ngày")
     }
 
-    func backupText(_ acc: Account) -> String {
-        guard let exp = acc.setupTokenExpiresAt else { return "Chưa có token dự phòng" }
-        return "Token dự phòng còn ~\(max(exp.daysFromNow, 0)) ngày"
-    }
-
     // MARK: Helpers
 
+    /// Writes back only on a real change, so observers don't redraw for nothing.
     private func update(_ id: String, _ change: (inout Account) -> Void) {
         guard let i = state.accounts.firstIndex(where: { $0.id == id }) else { return }
-        change(&state.accounts[i])
+        var acc = state.accounts[i]
+        change(&acc)
+        if acc != state.accounts[i] { state.accounts[i] = acc }
     }
 
     private func upsert(_ acc: Account) {
@@ -612,38 +759,41 @@ final class AccountStore: ObservableObject {
         }
     }
 
+    /// Encodes on the main thread (a few KB) and writes on a serial queue.
     private func save() {
         guard state != lastSaved else { return }
         let enc = JSONEncoder()
         enc.dateEncodingStrategy = .iso8601
         enc.outputFormatting = [.prettyPrinted, .sortedKeys]
         guard let data = try? enc.encode(state) else { return }
-        try? data.write(to: stateURL, options: .atomic)
         lastSaved = state
+        let url = stateURL
+        Self.saveQueue.async { try? data.write(to: url, options: .atomic) }
     }
 }
 
+/// DateFormatter is expensive to create; these are made once.
+@MainActor
 enum Fmt {
+    private static let full: DateFormatter = { let f = DateFormatter(); f.dateFormat = "dd/MM/yyyy HH:mm"; return f }()
+    private static let time: DateFormatter = { let f = DateFormatter(); f.dateFormat = "HH:mm"; return f }()
+    private static let dayTime: DateFormatter = { let f = DateFormatter(); f.dateFormat = "dd/MM HH:mm"; return f }()
+
     static func date(_ d: Date?) -> String {
         guard let d else { return "—" }
-        let f = DateFormatter()
-        f.dateFormat = "dd/MM/yyyy HH:mm"
-        return f.string(from: d)
+        return full.string(from: d)
     }
 
     /// "hôm nay 16:59", "mai 22:59", "26/10 08:00".
     static func reset(_ d: Date) -> String {
-        let f = DateFormatter()
-        f.dateFormat = "HH:mm"
         let cal = Calendar.current
-        if cal.isDateInToday(d) { return "hôm nay \(f.string(from: d))" }
-        if cal.isDateInTomorrow(d) { return "mai \(f.string(from: d))" }
-        f.dateFormat = "dd/MM HH:mm"
-        return f.string(from: d)
+        if cal.isDateInToday(d) { return "hôm nay \(time.string(from: d))" }
+        if cal.isDateInTomorrow(d) { return "mai \(time.string(from: d))" }
+        return dayTime.string(from: d)
     }
 
-    static func ago(_ d: Date) -> String {
-        let s = -d.timeIntervalSinceNow
+    static func ago(_ d: Date, now: Date = Date()) -> String {
+        let s = now.timeIntervalSince(d)
         if s < 60 { return "vừa xong" }
         if s < 3600 { return "\(Int(s / 60)) phút trước" }
         if s < 86400 { return "\(Int(s / 3600)) giờ trước" }

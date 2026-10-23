@@ -15,11 +15,13 @@ enum Shell {
         stdin: String? = nil,
         env: [String: String]? = nil,
         cwd: URL? = nil,
-        timeout: TimeInterval = 30
+        timeout: TimeInterval = 30,
+        qos: QualityOfService = .default
     ) -> ShellResult {
         let p = Process()
         p.executableURL = URL(fileURLWithPath: path)
         p.arguments = args
+        p.qualityOfService = qos
         if let env { p.environment = env }
         if let cwd { p.currentDirectoryURL = cwd }
 

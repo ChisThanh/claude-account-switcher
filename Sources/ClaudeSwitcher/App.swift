@@ -3,13 +3,13 @@ import SwiftUI
 @main
 struct ClaudeSwitcherApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var delegate
-    @StateObject private var store = AccountStore.shared
+    private let store = AccountStore.shared
 
     var body: some Scene {
         MenuBarExtra {
-            MenuPanel().environmentObject(store)
+            MenuPanel().environment(store)
         } label: {
-            MenuBarLabel(account: store.active, warn: store.active.map { store.health($0).level == .expired } ?? false)
+            MenuBarLabel()
         }
         .menuBarExtraStyle(.window)
     }
@@ -33,12 +33,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 }
 
-/// The menu bar shows who is logged in, not just an icon.
+/// The menu bar shows who is logged in, not just an icon. It reads the store
+/// itself, so Observation redraws it only when the active account changes.
 struct MenuBarLabel: View {
-    let account: Account?
-    let warn: Bool
+    private let store = AccountStore.shared
 
     var body: some View {
+        let account = store.active
+        let warn = account.map { store.health($0).level == .expired } ?? false
         HStack(spacing: 3) {
             Image(systemName: warn ? "exclamationmark.triangle.fill" : "sparkle")
             if let account {
@@ -62,7 +64,7 @@ enum PanelPreview {
         let w = NSWindow(contentRect: .zero, styleMask: [.titled, .closable], backing: .buffered, defer: false)
         w.title = "Panel preview"
         w.isReleasedWhenClosed = false
-        w.contentViewController = NSHostingController(rootView: MenuPanel().environmentObject(AccountStore.shared))
+        w.contentViewController = NSHostingController(rootView: MenuPanel().environment(AccountStore.shared))
         w.center()
         window = w
         NSApp.activate(ignoringOtherApps: true)
@@ -83,7 +85,7 @@ enum ManageWindow {
             w.title = "Claude Switcher"
             w.isReleasedWhenClosed = false
             w.contentViewController = NSHostingController(
-                rootView: ManageView().environmentObject(AccountStore.shared))
+                rootView: ManageView().environment(AccountStore.shared))
             w.setContentSize(NSSize(width: 860, height: 600))
             w.minSize = NSSize(width: 760, height: 480)
             w.center()

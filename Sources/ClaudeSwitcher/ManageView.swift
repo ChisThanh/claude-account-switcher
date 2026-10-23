@@ -2,7 +2,7 @@ import Combine
 import SwiftUI
 
 struct ManageView: View {
-    @EnvironmentObject var store: AccountStore
+    @Environment(AccountStore.self) private var store
     @State private var selection: String?
     @State private var columns = NavigationSplitViewVisibility.all
 
@@ -73,7 +73,11 @@ struct ManageView: View {
         .toolbar {
             ToolbarItem { SettingsMenu() }
         }
-        .onAppear { selection = selection ?? store.state.activeId }
+        .onAppear {
+            selection = selection ?? store.state.activeId
+            store.viewAppeared()
+        }
+        .onDisappear { store.viewDisappeared() }
         .onChange(of: store.state.accounts.count) { _, _ in
             if selection == nil || store.account(selection!) == nil { selection = store.state.activeId }
         }
@@ -81,7 +85,7 @@ struct ManageView: View {
 }
 
 private struct Onboarding: View {
-    @EnvironmentObject var store: AccountStore
+    @Environment(AccountStore.self) private var store
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
@@ -127,13 +131,13 @@ private struct Card<Content: View>: View {
 }
 
 struct AccountDetail: View {
-    @EnvironmentObject var store: AccountStore
+    @Environment(AccountStore.self) private var store
     let account: Account
     @State private var label = ""
     @State private var token = ""
     @State private var clipboardToken: String?
     @State private var confirmRemove = false
-    private let clipboardTimer = Timer.publish(every: 1, on: .main, in: .common).autoconnect()
+    @State private var saving = false
 
     private var isActive: Bool { account.id == store.state.activeId }
 
@@ -154,12 +158,21 @@ struct AccountDetail: View {
             }
             .padding(24)
         }
-        .onAppear {
-            label = account.label ?? ""
-            clipboardToken = store.clipboardSetupToken()
-        }
-        .onReceive(clipboardTimer) { _ in
-            if !account.hasSetupToken { clipboardToken = store.clipboardSetupToken() }
+        .onAppear { label = account.label ?? "" }
+        .task(id: account.hasSetupToken) {
+            // Only while a token is missing, and the clipboard text is read only
+            // when its change count moves (a plain integer check otherwise).
+            guard !account.hasSetupToken else { return clipboardToken = nil }
+            var seen = -1
+            while !Task.isCancelled {
+                let count = NSPasteboard.general.changeCount
+                if count != seen {
+                    seen = count
+                    let found = store.clipboardSetupToken()
+                    if found != clipboardToken { clipboardToken = found }
+                }
+                try? await Task.sleep(for: .seconds(1))
+            }
         }
         .confirmationDialog("Xoá \(account.email) khỏi app?", isPresented: $confirmRemove) {
             Button("Xoá", role: .destructive) { store.remove(account.id) }
@@ -261,21 +274,30 @@ struct AccountDetail: View {
                 stepRow(2, "Lưu token") {
                     if let clip = clipboardToken {
                         Button {
-                            if store.saveSetupToken(clip, for: account.id) { clipboardToken = nil }
+                            save(clip) { clipboardToken = nil }
                         } label: {
                             Label("Lưu token vừa copy (…\(clip.suffix(6)))", systemImage: "doc.on.clipboard")
                         }
                         .buttonStyle(.borderedProminent)
+                        .disabled(saving)
                     }
                     HStack {
                         SecureField(clipboardToken == nil ? "Dán token vào đây" : "hoặc dán token khác", text: $token)
                         Button("Lưu") {
-                            if store.saveSetupToken(token, for: account.id) { token = "" }
+                            save(token) { token = "" }
                         }
-                        .disabled(token.isEmpty)
+                        .disabled(token.isEmpty || saving)
                     }
                 }
             }
+        }
+    }
+
+    private func save(_ value: String, onSuccess: @escaping () -> Void) {
+        saving = true
+        Task {
+            if await store.saveSetupToken(value, for: account.id) { onSuccess() }
+            saving = false
         }
     }
 

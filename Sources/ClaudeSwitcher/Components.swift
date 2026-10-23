@@ -144,10 +144,15 @@ struct UsageBar: View {
 
 /// Every plan limit with its bar and reset time, plus when it was read.
 struct UsageDetail: View {
-    @EnvironmentObject var store: AccountStore
+    @Environment(AccountStore.self) private var store
     let account: Account
 
     var body: some View {
+        // Minute ticks keep "x phút trước" and passed resets current without a store change.
+        TimelineView(.everyMinute) { _ in content }
+    }
+
+    private var content: some View {
         VStack(alignment: .leading, spacing: 10) {
             if let usage = account.usage {
                 ForEach(usage.windows) { w in
@@ -175,7 +180,7 @@ struct UsageDetail: View {
 }
 
 struct UsageFooter: View {
-    @EnvironmentObject var store: AccountStore
+    @Environment(AccountStore.self) private var store
     let account: Account
 
     var body: some View {
@@ -205,10 +210,15 @@ struct UsageFooter: View {
 
 /// "Phiên ▮▮▯ 19% · Tuần ▮▮▮ 75%" for list rows.
 struct UsageCompact: View {
-    @EnvironmentObject var store: AccountStore
+    @Environment(AccountStore.self) private var store
     let account: Account
 
     var body: some View {
+        // Minute ticks keep "x phút trước" and passed resets current without a store change.
+        TimelineView(.everyMinute) { _ in content }
+    }
+
+    private var content: some View {
         HStack(spacing: 10) {
             if store.usageLoading.contains(account.id) {
                 ProgressView().controlSize(.mini)
