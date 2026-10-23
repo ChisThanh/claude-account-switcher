@@ -40,8 +40,14 @@ App đọc usage bằng `claude -p /usage --no-session-persistence`. Đây là l
 
 ## Thêm tài khoản
 
-1. Menu → **Thêm tài khoản…** mở Terminal với lệnh `claude auth login`. Đăng nhập tài khoản mới trên trình duyệt.
-2. App tự nhận tài khoản mới, tối đa 30 giây sau.
+1. Bấm **Thêm tài khoản** và chọn cách mở trang đăng nhập:
+   - **Cửa sổ ẩn danh** (Brave, Chrome, Edge, Firefox…): dùng để đăng nhập một tài khoản *khác* với tài khoản claude.ai đang mở trên trình duyệt chính.
+   - **Trình duyệt chính:** dùng tài khoản claude.ai đang đăng nhập sẵn.
+   - **Chỉ copy link:** dán vào trình duyệt nào cũng được. Safari không mở ẩn danh bằng dòng lệnh được, nên với Safari hãy chọn cách này rồi dán vào cửa sổ riêng tư (Cmd+Shift+N).
+
+   App chạy `claude auth login` ở nền với `BROWSER=/usr/bin/true`, nên Claude Code không tự mở trình duyệt, và đọc link đăng nhập từ output. Không cần Terminal.
+2. Đăng nhập xong, app tự nhận tài khoản sau vài giây. Trong lúc chờ có thể **Mở lại link…** hoặc **Huỷ**.
+
 3. Trong **Quản lý tài khoản…**, bấm **Mở Terminal: claude setup-token**. Trên trình duyệt chọn đúng tài khoản đó, rồi dán token vào ô **Dán token** và bấm **Lưu**.
 
 Chỉ dùng các tài khoản do chính bạn sở hữu. Dùng chung tài khoản với người khác là trái điều khoản của Anthropic.

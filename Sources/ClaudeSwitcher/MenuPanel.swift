@@ -13,7 +13,7 @@ struct MenuPanel: View {
                 BannerView(banner: banner) { store.dismissBanner() }
             }
             if store.addingSince != nil {
-                WaitingForLogin { store.cancelAdding() }
+                WaitingForLogin()
             }
             if !store.staleSessions.isEmpty {
                 RestartHint(count: store.staleSessions.count)
@@ -48,12 +48,10 @@ struct MenuPanel: View {
 
             Divider()
             HStack {
-                Button {
-                    store.addAccount()
-                } label: {
+                AddAccountMenu {
                     Label("Thêm tài khoản", systemImage: "plus.circle.fill")
                 }
-                .disabled(store.addingSince != nil)
+                .fixedSize()
                 Spacer()
                 Button("Quản lý…") {
                     dismiss()
@@ -149,7 +147,7 @@ struct AccountRow: View {
                 .help("Cập nhật usage (tạm chuyển sang tài khoản này vài giây)")
             }
             if health.level == .expired {
-                Button("Đăng nhập lại") { store.addAccount(email: account.email) }
+                AddAccountMenu(email: account.email) { Text("Đăng nhập lại") }.fixedSize()
                     .controlSize(.small)
             } else {
                 Button("Chuyển") { store.switchTo(account.id) }

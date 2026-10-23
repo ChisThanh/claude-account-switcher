@@ -34,12 +34,15 @@ final class AccountStore {
     private(set) var state = AppState()
     private(set) var banner: Banner?
     private(set) var busy = false
-    /// Set while `claude auth login` runs in Terminal; cleared when the new login shows up.
+    /// Set while a `claude auth login` is pending; cleared when the new login shows up.
     private(set) var addingSince: Date?
     /// claude processes that were running at the last switch and still hold the old account.
     private(set) var staleSessions: Set<Int32> = []
     /// Accounts whose usage is being read right now.
     private(set) var usageLoading: Set<String> = []
+    /// The sign-in link of the login running in the background, once it printed it.
+    private(set) var loginURL: URL?
+    @ObservationIgnored private var loginProcess: LoginProcess?
     private(set) var launchAtLogin = SMAppService.mainApp.status == .enabled
     /// True when no state file existed at startup.
     private(set) var isFirstLaunch = false
@@ -243,13 +246,13 @@ final class AccountStore {
 
     private func finishAdding(_ acc: Account, isNew: Bool) {
         let relogin = addingEmail?.caseInsensitiveCompare(acc.email) == .orderedSame
-        cancelAdding()
+        clearAddingState()
         if isNew {
             announce("Đã thêm \(acc.email) và đang dùng tài khoản này.", kind: .success)
         } else if relogin {
             announce("Đã đăng nhập lại \(acc.email).", kind: .success)
         } else {
-            announce("Bạn vừa đăng nhập lại \(acc.email) — tài khoản này đã có. Trình duyệt đang tự dùng tài khoản claude.ai cũ. Để thêm tài khoản khác: đăng xuất claude.ai trên trình duyệt (hoặc mở link trong Terminal bằng cửa sổ ẩn danh), rồi bấm Thêm tài khoản lần nữa.",
+            announce("Bạn vừa đăng nhập lại \(acc.email) — tài khoản này đã có. Trình duyệt chính đang đăng nhập sẵn tài khoản này. Để thêm tài khoản khác: bấm Thêm tài khoản và chọn Cửa sổ ẩn danh.",
                      kind: .warning)
         }
     }
@@ -581,31 +584,70 @@ final class AccountStore {
 
     // MARK: Account actions
 
-    /// Runs `claude auth login` in Terminal; with an email it pre-fills the page
-    /// (used to log an expired account back in).
-    func addAccount(email: String? = nil) {
+    /// Runs `claude auth login` in the background and opens its sign-in link the
+    /// way the user picked; with an email the page is pre-filled (logging an
+    /// expired account back in).
+    func addAccount(email: String? = nil, open mode: LoginOpenMode = .normal) {
         guard let claude = Self.claudePath else { return announce("Không tìm thấy lệnh claude", kind: .error) }
+        loginProcess?.cancel()
         Task {
             await serial {
                 await self.syncLocked()
                 // Baseline first: the wait only starts once there is something to compare against.
                 self.addingBaseline = await io { Keychain.readClaudeLogin() }
+                let login = LoginProcess()
+                login.onURL = { [weak self] url in
+                    self?.loginURL = url
+                    self?.openLoginURL(mode)
+                }
+                login.onExit = { [weak self, weak login] status, cancelled, output in
+                    guard let self, let login, self.loginProcess === login else { return }
+                    self.loginProcess = nil
+                    self.loginURL = nil
+                    if status == 0 {
+                        self.tick(force: true)   // pick the new login up now, not at the next tick
+                    } else if !cancelled, self.addingSince != nil {
+                        self.clearAddingState()
+                        let tail = output.split(separator: "\n").suffix(2).joined(separator: " ").prefix(200)
+                        self.announce("Đăng nhập không thành công: \(tail)", kind: .error)
+                    }
+                }
+                do {
+                    try login.start(claude: claude, email: email)
+                } catch {
+                    return self.announce("Không chạy được claude auth login: \(error.localizedDescription)", kind: .error)
+                }
+                self.loginProcess = login
                 self.addingSince = Date()
                 self.addingEmail = email
-                var command = """
-                    echo 'Trình duyệt sẽ mở trang đăng nhập Claude.'
-                    echo 'Nếu nó tự dùng tài khoản claude.ai đang đăng nhập sẵn mà bạn muốn tài khoản KHÁC:'
-                    echo '  copy link bên dưới và mở trong cửa sổ ẩn danh (Cmd+Shift+N), hoặc đăng xuất claude.ai trước.'
-                    echo
-                    '\(claude)' auth login
-                    """
-                if let email { command += " --email '\(email.replacingOccurrences(of: "'", with: ""))'" }
-                self.openInTerminal("login", command)
             }
         }
     }
 
+    /// Opens (or re-opens) the pending sign-in link.
+    func openLoginURL(_ mode: LoginOpenMode) {
+        guard let url = loginURL else { return }
+        switch mode {
+        case .normal:
+            LoginBrowser.openNormal(url)
+        case .privateWindow(let app):
+            LoginBrowser.openPrivate(url, in: app)
+        case .copyOnly:
+            LoginBrowser.copy(url)
+            announce("Đã copy link đăng nhập. Dán vào trình duyệt bạn muốn.", kind: .info)
+        }
+    }
+
+    /// The user gave up: stop the login process too.
     func cancelAdding() {
+        loginProcess?.cancel()
+        loginProcess = nil
+        loginURL = nil
+        clearAddingState()
+    }
+
+    /// The login finished (or timed out in the UI); the process exits on its own.
+    private func clearAddingState() {
         if addingSince != nil { addingSince = nil }
         addingEmail = nil
     }

@@ -33,16 +33,14 @@ struct ManageView: View {
             .safeAreaInset(edge: .bottom) {
                 VStack(spacing: 8) {
                     if store.addingSince != nil {
-                        WaitingForLogin { store.cancelAdding() }
+                        WaitingForLogin()
                     }
-                    Button {
-                        store.addAccount()
-                    } label: {
+                    AddAccountMenu {
                         Label("Thêm tài khoản", systemImage: "plus").frame(maxWidth: .infinity)
                     }
+                    .menuStyle(.button)
                     .buttonStyle(.borderedProminent)
                     .controlSize(.large)
-                    .disabled(store.addingSince != nil)
                 }
                 .padding(12)
             }
@@ -90,12 +88,12 @@ private struct Onboarding: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
             Text("Bắt đầu").font(.largeTitle.bold())
-            step(1, "Thêm tài khoản", "Bấm Thêm tài khoản. Terminal mở ra, trình duyệt hỏi đăng nhập — chọn tài khoản Claude của bạn.")
+            step(1, "Thêm tài khoản", "Bấm Thêm tài khoản và chọn cách mở: cửa sổ ẩn danh để đăng nhập một tài khoản khác với tài khoản đang mở trên trình duyệt chính.")
             step(2, "Lặp lại cho từng tài khoản", "Mỗi lần đăng nhập xong, app tự nhận và lưu tài khoản đó.")
             step(3, "Thêm token dự phòng 1 năm", "Chọn từng tài khoản và làm theo mục Token dự phòng để không bị đăng xuất khi lâu không dùng.")
             step(4, "Chuyển tài khoản", "Bấm icon ✦ trên thanh menu và chọn Chuyển.")
-            Button("Thêm tài khoản đầu tiên") { store.addAccount() }
-                .buttonStyle(.borderedProminent).controlSize(.large)
+            AddAccountMenu { Text("Thêm tài khoản đầu tiên") }
+                .menuStyle(.button).buttonStyle(.borderedProminent).controlSize(.large).fixedSize()
         }
         .padding(32)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
@@ -233,7 +231,7 @@ struct AccountDetail: View {
             }
             HStack {
                 if health.level == .expired || !account.loginUsable {
-                    Button("Đăng nhập lại") { store.addAccount(email: account.email) }
+                    AddAccountMenu(email: account.email) { Text("Đăng nhập lại") }.fixedSize()
                 } else {
                     Button(store.busy ? "Đang gia hạn…" : "Gia hạn ngay") {
                         Task { await store.refreshLogin(account.id) }

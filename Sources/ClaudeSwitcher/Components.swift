@@ -102,21 +102,82 @@ struct RestartHint: View {
 }
 
 struct WaitingForLogin: View {
-    let cancel: () -> Void
+    @Environment(AccountStore.self) private var store
 
     var body: some View {
-        HStack(spacing: 10) {
-            ProgressView().controlSize(.small)
-            VStack(alignment: .leading, spacing: 2) {
-                Text("Đang chờ bạn đăng nhập…").font(.callout.weight(.medium))
-                Text("Làm theo Terminal và trình duyệt. Muốn tài khoản khác mà trình duyệt tự chọn tài khoản cũ? Mở link trong Terminal bằng cửa sổ ẩn danh.")
-                    .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 10) {
+                ProgressView().controlSize(.small)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Đang chờ bạn đăng nhập…").font(.callout.weight(.medium))
+                    Text(store.loginURL == nil
+                         ? "Đang lấy link đăng nhập…"
+                         : "Đăng nhập trên trình duyệt vừa mở. App tự nhận tài khoản khi xong.")
+                        .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                }
+                Spacer(minLength: 0)
+                Button("Huỷ") { store.cancelAdding() }.controlSize(.small)
             }
-            Spacer(minLength: 0)
-            Button("Huỷ", action: cancel).controlSize(.small)
+            if store.loginURL != nil {
+                Menu("Mở lại link…") {
+                    LoginModeItems { store.openLoginURL($0) }
+                }
+                .controlSize(.small)
+                .fixedSize()
+            }
         }
         .padding(10)
         .background(RoundedRectangle(cornerRadius: 8).fill(Color.blue.opacity(0.10)))
+    }
+}
+
+/// The ways to open a sign-in link: a private window first, since that is how
+/// a second account gets in while the main browser is signed in to another.
+struct LoginModeItems: View {
+    let pick: (LoginOpenMode) -> Void
+    private static let privateApps = LoginBrowser.privateCapable()
+
+    var body: some View {
+        let apps = Self.privateApps
+        if apps.isEmpty {
+            Text("Trình duyệt trên máy không mở được cửa sổ ẩn danh — dùng Chỉ copy link")
+        }
+        ForEach(apps) { app in
+            Button {
+                pick(.privateWindow(app))
+            } label: {
+                Label("Cửa sổ ẩn danh — \(app.name)", systemImage: "eyeglasses")
+            }
+        }
+        Button {
+            pick(.normal)
+        } label: {
+            Label("Trình duyệt chính — \(LoginBrowser.defaultBrowserName)", systemImage: "safari")
+        }
+        Divider()
+        Button {
+            pick(.copyOnly)
+        } label: {
+            Label("Chỉ copy link đăng nhập", systemImage: "doc.on.doc")
+        }
+    }
+}
+
+/// "Thêm tài khoản" / "Đăng nhập lại" as a pull-down of the open modes.
+struct AddAccountMenu<MenuLabel: View>: View {
+    @Environment(AccountStore.self) private var store
+    var email: String? = nil
+    @ViewBuilder let label: () -> MenuLabel
+
+    var body: some View {
+        Menu {
+            Section(email == nil ? "Mở trang đăng nhập bằng" : "Đăng nhập lại \(email!) bằng") {
+                LoginModeItems { store.addAccount(email: email, open: $0) }
+            }
+        } label: {
+            label()
+        }
+        .disabled(store.addingSince != nil)
     }
 }
 
