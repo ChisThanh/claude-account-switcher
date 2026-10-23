@@ -68,6 +68,7 @@ struct ManageView: View {
                 }
             }
         }
+        .frame(minWidth: 720, minHeight: 420)
         .toolbar {
             ToolbarItem { SettingsMenu() }
         }

@@ -84,14 +84,32 @@ enum ManageWindow {
                 backing: .buffered, defer: false)
             w.title = "Claude Switcher"
             w.isReleasedWhenClosed = false
-            w.contentViewController = NSHostingController(
-                rootView: ManageView().environment(AccountStore.shared))
+            let host = NSHostingController(rootView: ManageView().environment(AccountStore.shared))
+            // By default the hosting controller sizes the window to the content's
+            // ideal size: the ~1700 pt detail column made it taller than the
+            // screen, title bar off the top. Let SwiftUI set only the minimum;
+            // the window (and the user) choose the rest and the content scrolls.
+            host.sizingOptions = [.minSize]
+            w.contentViewController = host
+            w.minSize = NSSize(width: 720, height: 420)
             w.setContentSize(NSSize(width: 860, height: 600))
-            w.minSize = NSSize(width: 760, height: 480)
             w.center()
+            w.setFrameAutosaveName("ClaudeSwitcherManage")   // remembers the user's size and place
             window = w
         }
+        if let w = window { fitOnScreen(w) }
         NSApp.activate(ignoringOtherApps: true)
         window?.makeKeyAndOrderFront(nil)
+    }
+
+    /// Keeps the whole window, title bar included, inside the screen's usable area.
+    private static func fitOnScreen(_ w: NSWindow) {
+        guard let visible = (w.screen ?? NSScreen.main)?.visibleFrame else { return }
+        var f = w.frame
+        f.size.width = min(f.width, visible.width)
+        f.size.height = min(f.height, visible.height)
+        f.origin.x = min(max(f.minX, visible.minX), visible.maxX - f.width)
+        f.origin.y = min(max(f.minY, visible.minY), visible.maxY - f.height)
+        if f != w.frame { w.setFrame(f, display: true) }
     }
 }

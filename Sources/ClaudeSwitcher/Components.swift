@@ -297,24 +297,28 @@ struct UsageCompact: View {
     }
 
     private var content: some View {
-        HStack(spacing: 10) {
-            if store.usageLoading.contains(account.id) {
-                ProgressView().controlSize(.mini)
-                Text("Đang đọc usage…").font(.caption2).foregroundStyle(.secondary)
-            } else if let usage = account.usage {
-                ForEach([usage.session, usage.week].compactMap { $0 }) { w in
-                    HStack(spacing: 4) {
-                        Text(w.shortTitle).font(.caption2).foregroundStyle(.secondary)
-                        UsageBar(percent: w.currentPercent, height: 4).frame(width: 34)
-                        Text("\(w.currentPercent)%").font(.caption2.monospacedDigit())
-                            .foregroundStyle(usageColor(w.currentPercent))
+        VStack(alignment: .leading, spacing: 1) {
+            HStack(spacing: 10) {
+                if store.usageLoading.contains(account.id) {
+                    ProgressView().controlSize(.mini)
+                    Text("Đang đọc usage…").font(.caption2).foregroundStyle(.secondary)
+                } else if let usage = account.usage {
+                    ForEach([usage.session, usage.week].compactMap { $0 }) { w in
+                        HStack(spacing: 4) {
+                            Text(w.shortTitle).font(.caption2).foregroundStyle(.secondary).fixedSize()
+                            UsageBar(percent: w.currentPercent, height: 4).frame(minWidth: 16, maxWidth: 34)
+                            Text("\(w.currentPercent)%").font(.caption2.monospacedDigit())
+                                .foregroundStyle(usageColor(w.currentPercent)).fixedSize()
+                        }
                     }
+                } else {
+                    Text("Chưa có usage").font(.caption2).foregroundStyle(.tertiary)
                 }
-                if account.id != store.state.activeId {
-                    Text(Fmt.ago(usage.fetchedAt)).font(.caption2).foregroundStyle(.tertiary)
-                }
-            } else {
-                Text("Chưa có usage").font(.caption2).foregroundStyle(.tertiary)
+            }
+            // Own line: next to the bars it squeezed the labels into "…" in narrow rows.
+            if let usage = account.usage, account.id != store.state.activeId,
+               !store.usageLoading.contains(account.id) {
+                Text("usage đo \(Fmt.ago(usage.fetchedAt))").font(.caption2).foregroundStyle(.tertiary)
             }
         }
     }

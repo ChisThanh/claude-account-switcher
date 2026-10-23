@@ -41,8 +41,14 @@ struct MenuPanel: View {
 
             if !others.isEmpty {
                 Text("CHUYỂN SANG").font(.caption2.weight(.semibold)).foregroundStyle(.secondary)
-                VStack(spacing: 2) {
-                    ForEach(others) { AccountRow(account: $0) }
+                // Past four accounts the list scrolls, so the panel never outgrows the screen.
+                if others.count > 4 {
+                    ScrollView {
+                        VStack(spacing: 2) { ForEach(others) { AccountRow(account: $0) } }
+                    }
+                    .frame(height: 4 * 62)
+                } else {
+                    VStack(spacing: 2) { ForEach(others) { AccountRow(account: $0) } }
                 }
             }
 
