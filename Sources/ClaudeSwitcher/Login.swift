@@ -1,34 +1,54 @@
 import AppKit
 import Foundation
 
-/// `claude auth login` in the background. BROWSER points at a no-op, so Claude
-/// Code opens nothing itself; the sign-in link is read from its output and opened
-/// wherever the user chose. The process waits for the browser's localhost
-/// callback and exits once the login is saved.
+/// `claude auth login` in the background, opened wherever the user chose.
+///
+/// Claude Code has two sign-in links. The one it hands to $BROWSER redirects to
+/// a localhost listener, so the login completes by itself. The one it prints
+/// ("If the browser didn't open, visit: …") redirects to a page that only shows
+/// a code to paste back. BROWSER therefore points at a tiny script that records
+/// the link instead of opening it; the printed link is only a fallback, and a
+/// code from it can be sent with `submitCode`.
 final class LoginProcess: @unchecked Sendable {
     private let process = Process()
+    private let stdin = Pipe()
     private let lock = NSLock()
+    private let workDir: URL
     private var output = ""
     private var urlSent = false
     private var cancelled = false
 
-    /// Both called on the main queue.
-    var onURL: ((URL) -> Void)?
+    /// Both called on the main queue. `needsCode` is true for the fallback link.
+    var onURL: ((_ url: URL, _ needsCode: Bool) -> Void)?
     var onExit: ((_ status: Int32, _ cancelled: Bool, _ output: String) -> Void)?
 
+    init() {
+        workDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("ClaudeSwitcher-login-\(UUID().uuidString)")
+    }
+
+    deinit { try? FileManager.default.removeItem(at: workDir) }
+
     func start(claude: String, email: String?) throws {
+        try FileManager.default.createDirectory(at: workDir, withIntermediateDirectories: true)
+        let urlFile = workDir.appendingPathComponent("url")
+        let script = workDir.appendingPathComponent("browser.sh")
+        try "#!/bin/sh\nprintf '%s\\n' \"$1\" > \"$CLAUDE_SWITCHER_URL_FILE\"\n".write(to: script, atomically: true, encoding: .utf8)
+        chmod(script.path, 0o700)
+
         var env = ProcessInfo.processInfo.environment
         for key in [ClaudeFiles.envKey, "CLAUDE_CONFIG_DIR", "ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN"] { env[key] = nil }
-        env["BROWSER"] = "/usr/bin/true"
+        env["BROWSER"] = script.path
+        env["CLAUDE_SWITCHER_URL_FILE"] = urlFile.path
 
         process.executableURL = URL(fileURLWithPath: claude)
         process.arguments = ["auth", "login"] + (email.map { ["--email", $0] } ?? [])
         process.environment = env
         process.currentDirectoryURL = FileManager.default.homeDirectoryForCurrentUser
-        let out = Pipe(), stdin = Pipe()
+        let out = Pipe()
         process.standardOutput = out
         process.standardError = out
-        process.standardInput = stdin   // kept open: it offers a paste-code prompt and must not see EOF
+        process.standardInput = stdin   // kept open for the paste-code prompt; it must not see EOF
 
         out.fileHandleForReading.readabilityHandler = { [weak self] handle in
             let data = handle.availableData
@@ -44,6 +64,41 @@ final class LoginProcess: @unchecked Sendable {
             DispatchQueue.main.async { self.onExit?(p.terminationStatus, wasCancelled, text) }
         }
         try process.run()
+        watch(urlFile, since: Date())
+    }
+
+    /// The localhost link usually lands within half a second. If it hasn't after
+    /// 5 s, fall back to the printed paste-code link.
+    private func watch(_ file: URL, since start: Date) {
+        DispatchQueue.global(qos: .userInitiated).asyncAfter(deadline: .now() + 0.1) { [weak self] in
+            guard let self, self.process.isRunning else { return }
+            if let text = try? String(contentsOf: file, encoding: .utf8),
+               let url = URL(string: text.trimmingCharacters(in: .whitespacesAndNewlines)), url.scheme == "https" {
+                return self.send(url, needsCode: false)
+            }
+            if Date().timeIntervalSince(start) > 5 {
+                self.lock.lock()
+                let printed = Self.printedURL(in: self.output)
+                self.lock.unlock()
+                if let printed { return self.send(printed, needsCode: true) }
+            }
+            if Date().timeIntervalSince(start) < 60 { self.watch(file, since: start) }
+        }
+    }
+
+    private func send(_ url: URL, needsCode: Bool) {
+        lock.lock()
+        let first = !urlSent
+        urlSent = true
+        lock.unlock()
+        if first { DispatchQueue.main.async { self.onURL?(url, needsCode) } }
+    }
+
+    /// The code the fallback page shows, answered to "Paste code here if prompted >".
+    func submitCode(_ code: String) {
+        let clean = code.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !clean.isEmpty, process.isRunning else { return }
+        stdin.fileHandleForWriting.write(Data((clean + "\n").utf8))
     }
 
     func cancel() {
@@ -57,13 +112,10 @@ final class LoginProcess: @unchecked Sendable {
         lock.lock()
         output += chunk
         if output.count > 20_000 { output = String(output.suffix(10_000)) }
-        let found = urlSent ? nil : Self.signInURL(in: output)
-        if found != nil { urlSent = true }
         lock.unlock()
-        if let found { DispatchQueue.main.async { self.onURL?(found) } }
     }
 
-    static func signInURL(in text: String) -> URL? {
+    static func printedURL(in text: String) -> URL? {
         guard let r = text.range(of: #"https://\S*oauth/authorize\S*"#, options: .regularExpression) else { return nil }
         return URL(string: String(text[r]))
     }

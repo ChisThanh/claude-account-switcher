@@ -103,6 +103,7 @@ struct RestartHint: View {
 
 struct WaitingForLogin: View {
     @Environment(AccountStore.self) private var store
+    @State private var code = ""
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -112,13 +113,24 @@ struct WaitingForLogin: View {
                     Text("Đang chờ bạn đăng nhập…").font(.callout.weight(.medium))
                     Text(store.loginURL == nil
                          ? "Đang lấy link đăng nhập…"
-                         : "Đăng nhập trên trình duyệt vừa mở. App tự nhận tài khoản khi xong.")
+                         : store.loginNeedsCode
+                            ? "Đăng nhập trên trình duyệt. Trang sẽ hiện một mã — copy và dán vào ô bên dưới."
+                            : "Đăng nhập trên trình duyệt vừa mở. App tự nhận tài khoản khi xong.")
                         .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
                 }
                 Spacer(minLength: 0)
                 Button("Huỷ") { store.cancelAdding() }.controlSize(.small)
             }
             if store.loginURL != nil {
+                HStack(spacing: 6) {
+                    TextField(store.loginNeedsCode ? "Dán mã từ trang đăng nhập" : "Trang hiện mã? Dán vào đây", text: $code)
+                        .textFieldStyle(.roundedBorder)
+                        .controlSize(.small)
+                        .onSubmit(send)
+                    Button("Gửi mã", action: send)
+                        .controlSize(.small)
+                        .disabled(code.trimmingCharacters(in: .whitespaces).isEmpty)
+                }
                 Menu("Mở lại link…") {
                     LoginModeItems { store.openLoginURL($0) }
                 }
@@ -128,6 +140,11 @@ struct WaitingForLogin: View {
         }
         .padding(10)
         .background(RoundedRectangle(cornerRadius: 8).fill(Color.blue.opacity(0.10)))
+    }
+
+    private func send() {
+        store.submitLoginCode(code)
+        code = ""
     }
 }
 

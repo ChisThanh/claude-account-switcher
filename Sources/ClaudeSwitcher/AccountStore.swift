@@ -42,6 +42,8 @@ final class AccountStore {
     private(set) var usageLoading: Set<String> = []
     /// The sign-in link of the login running in the background, once it printed it.
     private(set) var loginURL: URL?
+    /// True when only the paste-code link was available, so the page shows a code.
+    private(set) var loginNeedsCode = false
     @ObservationIgnored private var loginProcess: LoginProcess?
     private(set) var launchAtLogin = SMAppService.mainApp.status == .enabled
     /// True when no state file existed at startup.
@@ -596,14 +598,16 @@ final class AccountStore {
                 // Baseline first: the wait only starts once there is something to compare against.
                 self.addingBaseline = await io { Keychain.readClaudeLogin() }
                 let login = LoginProcess()
-                login.onURL = { [weak self] url in
+                login.onURL = { [weak self] url, needsCode in
                     self?.loginURL = url
+                    self?.loginNeedsCode = needsCode
                     self?.openLoginURL(mode)
                 }
                 login.onExit = { [weak self, weak login] status, cancelled, output in
                     guard let self, let login, self.loginProcess === login else { return }
                     self.loginProcess = nil
                     self.loginURL = nil
+                    self.loginNeedsCode = false
                     if status == 0 {
                         self.tick(force: true)   // pick the new login up now, not at the next tick
                     } else if !cancelled, self.addingSince != nil {
@@ -638,11 +642,19 @@ final class AccountStore {
         }
     }
 
+    /// Sends the code a sign-in page showed back to the waiting `claude auth login`.
+    func submitLoginCode(_ code: String) {
+        guard let loginProcess else { return announce("Không còn phiên đăng nhập nào đang chờ. Bấm Thêm tài khoản lại.", kind: .error) }
+        loginProcess.submitCode(code)
+        announce("Đã gửi mã. App sẽ nhận tài khoản sau vài giây.", kind: .info)
+    }
+
     /// The user gave up: stop the login process too.
     func cancelAdding() {
         loginProcess?.cancel()
         loginProcess = nil
         loginURL = nil
+        loginNeedsCode = false
         clearAddingState()
     }
 
