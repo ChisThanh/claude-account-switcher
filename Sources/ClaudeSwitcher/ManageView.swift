@@ -8,27 +8,18 @@ struct ManageView: View {
 
     var body: some View {
         NavigationSplitView(columnVisibility: $columns) {
-            List(selection: $selection) {
-                Section("Tài khoản") {
+            // A plain ScrollView, not List: the List-backed sidebar went blank
+            // after a while of rows changing height (usage loading ↔ bars).
+            ScrollView {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("Tài khoản")
+                        .font(.caption.weight(.semibold)).foregroundStyle(.secondary)
+                        .padding(.horizontal, 8).padding(.bottom, 2)
                     ForEach(store.state.accounts) { acc in
-                        HStack(spacing: 10) {
-                            Avatar(account: acc, size: 28)
-                            VStack(alignment: .leading, spacing: 2) {
-                                HStack(spacing: 4) {
-                                    Text(acc.title).lineLimit(1)
-                                    if acc.id == store.state.activeId {
-                                        Image(systemName: "checkmark.circle.fill").foregroundStyle(.green).font(.caption)
-                                    }
-                                }
-                                let h = store.health(acc)
-                                HealthLine(level: h.level, text: h.text)
-                                UsageCompact(account: acc)
-                            }
-                        }
-                        .padding(.vertical, 3)
-                        .tag(acc.id)
+                        SidebarRow(account: acc, selected: selection == acc.id) { selection = acc.id }
                     }
                 }
+                .padding(10)
             }
             .safeAreaInset(edge: .bottom) {
                 VStack(spacing: 8) {
@@ -80,6 +71,39 @@ struct ManageView: View {
         .onChange(of: store.state.accounts.count) { _, _ in
             if selection == nil || store.account(selection!) == nil { selection = store.state.activeId }
         }
+    }
+}
+
+private struct SidebarRow: View {
+    @Environment(AccountStore.self) private var store
+    let account: Account
+    let selected: Bool
+    let select: () -> Void
+    @State private var hovering = false
+
+    var body: some View {
+        HStack(spacing: 10) {
+            Avatar(account: account, size: 28)
+            VStack(alignment: .leading, spacing: 2) {
+                HStack(spacing: 4) {
+                    Text(account.title).lineLimit(1)
+                    if account.id == store.state.activeId {
+                        Image(systemName: "checkmark.circle.fill").foregroundStyle(.green).font(.caption)
+                    }
+                }
+                let h = store.health(account)
+                HealthLine(level: h.level, text: h.text)
+                UsageCompact(account: account)
+            }
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, 8).padding(.vertical, 6)
+        .background(
+            RoundedRectangle(cornerRadius: 8)
+                .fill(selected ? Color.accentColor.opacity(0.28) : hovering ? Color.primary.opacity(0.06) : .clear))
+        .contentShape(RoundedRectangle(cornerRadius: 8))
+        .onTapGesture(perform: select)
+        .onHover { hovering = $0 }
     }
 }
 

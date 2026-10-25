@@ -108,6 +108,9 @@ enum ManageWindow {
         if let w = window { fitOnScreen(w) }
         NSApp.activate(ignoringOtherApps: true)
         window?.makeKeyAndOrderFront(nil)
+        // Otherwise AppKit focuses the first text field (the label field at the
+        // bottom of the detail) and scrolls the page down to it.
+        DispatchQueue.main.async { window?.makeFirstResponder(nil) }
     }
 
     /// Keeps the whole window, title bar included, inside the screen's usable area.
