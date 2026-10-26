@@ -12,7 +12,7 @@ Cần macOS 15 và Xcode (Swift 6). App được ký ad-hoc, không cần Apple 
 
 ## Ngôn ngữ
 
-App có tiếng Việt (mặc định) và tiếng Anh. Đổi trong menu ⚙ → **Ngôn ngữ / Language**. Đổi xong, panel và cửa sổ hiển thị lại ngay. Trong code, mỗi câu được viết song ngữ ngay tại chỗ dùng: `L("tiếng Việt", "English")`.
+App có tiếng Việt (mặc định) và tiếng Anh. Đổi trong menu ⚙ → **Ngôn ngữ** (bản tiếng Anh ghi **Language**). Đổi xong, panel và cửa sổ hiển thị lại ngay. Trong code, mỗi câu được viết song ngữ ngay tại chỗ dùng: `L("tiếng Việt", "English")`.
 
 ## Cách hoạt động
 

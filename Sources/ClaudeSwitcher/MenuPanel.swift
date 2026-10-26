@@ -179,7 +179,7 @@ struct SettingsMenu: View {
             Picker(selection: Binding(get: { store.language }, set: { store.setLanguage($0) })) {
                 ForEach(AppLanguage.allCases) { Text($0.name).tag($0) }
             } label: {
-                Label("Ngôn ngữ / Language", systemImage: "globe")
+                Label(L("Ngôn ngữ", "Language"), systemImage: "globe")
             }
             Divider()
             Button(L("Cập nhật usage mọi tài khoản", "Refresh usage for all accounts")) { Task { await store.refreshAllUsage() } }
