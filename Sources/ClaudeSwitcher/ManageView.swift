@@ -12,7 +12,7 @@ struct ManageView: View {
             // after a while of rows changing height (usage loading ↔ bars).
             ScrollView {
                 VStack(alignment: .leading, spacing: 4) {
-                    Text("Tài khoản")
+                    Text(L("Tài khoản", "Accounts"))
                         .font(.caption.weight(.semibold)).foregroundStyle(.secondary)
                         .padding(.horizontal, 8).padding(.bottom, 2)
                     ForEach(store.state.accounts) { acc in
@@ -27,7 +27,7 @@ struct ManageView: View {
                         WaitingForLogin()
                     }
                     AddAccountMenu {
-                        Label("Thêm tài khoản", systemImage: "plus").frame(maxWidth: .infinity)
+                        Label(L("Thêm tài khoản", "Add account"), systemImage: "plus").frame(maxWidth: .infinity)
                     }
                     .menuStyle(.button)
                     .buttonStyle(.borderedProminent)
@@ -54,11 +54,12 @@ struct ManageView: View {
                 } else if store.state.accounts.isEmpty {
                     Onboarding()
                 } else {
-                    Text("Chọn một tài khoản bên trái").foregroundStyle(.secondary)
+                    Text(L("Chọn một tài khoản bên trái", "Pick an account on the left")).foregroundStyle(.secondary)
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
                 }
             }
         }
+        .id(store.language)   // strings come from L(); a new language rebuilds them
         .frame(minWidth: 720, minHeight: 420)
         .toolbar {
             ToolbarItem { SettingsMenu() }
@@ -112,12 +113,12 @@ private struct Onboarding: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
-            Text("Bắt đầu").font(.largeTitle.bold())
-            step(1, "Thêm tài khoản", "Bấm Thêm tài khoản và chọn cách mở: cửa sổ ẩn danh để đăng nhập một tài khoản khác với tài khoản đang mở trên trình duyệt chính.")
-            step(2, "Lặp lại cho từng tài khoản", "Mỗi lần đăng nhập xong, app tự nhận và lưu tài khoản đó.")
-            step(3, "Thêm token dự phòng 1 năm", "Chọn từng tài khoản và làm theo mục Token dự phòng để không bị đăng xuất khi lâu không dùng.")
-            step(4, "Chuyển tài khoản", "Bấm icon ✦ trên thanh menu và chọn Chuyển.")
-            AddAccountMenu { Text("Thêm tài khoản đầu tiên") }
+            Text(L("Bắt đầu", "Get started")).font(.largeTitle.bold())
+            step(1, L("Thêm tài khoản", "Add account"), L("Bấm Thêm tài khoản và chọn cách mở: cửa sổ ẩn danh để đăng nhập một tài khoản khác với tài khoản đang mở trên trình duyệt chính.", "Click Add account and choose how to open it: a private window signs in an account other than the one open in your main browser."))
+            step(2, L("Lặp lại cho từng tài khoản", "Repeat for each account"), L("Mỗi lần đăng nhập xong, app tự nhận và lưu tài khoản đó.", "After each login the app picks up and saves the account."))
+            step(3, L("Thêm token dự phòng 1 năm", "Add a 1-year backup token"), L("Chọn từng tài khoản và làm theo mục Token dự phòng để không bị đăng xuất khi lâu không dùng.", "For each account, follow the backup token section so you aren't logged out after a long break."))
+            step(4, L("Chuyển tài khoản", "Switch accounts"), L("Bấm icon ✦ trên thanh menu và chọn Chuyển.", "Click the ✦ icon in the menu bar and choose Switch."))
+            AddAccountMenu { Text(L("Thêm tài khoản đầu tiên", "Add your first account")) }
                 .menuStyle(.button).buttonStyle(.borderedProminent).controlSize(.large).fixedSize()
         }
         .padding(32)
@@ -172,7 +173,7 @@ struct AccountDetail: View {
                 Card(title: "Usage", icon: "chart.bar.fill") {
                     UsageDetail(account: account)
                     if !isActive {
-                        Text("Số liệu của tài khoản không dùng là lần đọc gần nhất. Cập nhật chạy trong hồ sơ riêng của tài khoản này: không đổi tài khoản đang dùng, không làm gián đoạn phiên claude nào, không tốn lượt chat.")
+                        Text(L("Số liệu của tài khoản không dùng là lần đọc gần nhất. Cập nhật chạy trong hồ sơ riêng của tài khoản này: không đổi tài khoản đang dùng, không làm gián đoạn phiên claude nào, không tốn lượt chat.", "Numbers for an account not in use are from the last read. Refresh runs in this account's own profile: the account in use doesn't change, no claude session is interrupted, and no messages are used."))
                             .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
                     }
                 }
@@ -198,10 +199,10 @@ struct AccountDetail: View {
                 try? await Task.sleep(for: .seconds(1))
             }
         }
-        .confirmationDialog("Xoá \(account.email) khỏi app?", isPresented: $confirmRemove) {
-            Button("Xoá", role: .destructive) { store.remove(account.id) }
+        .confirmationDialog(L("Xoá \(account.email) khỏi app?", "Remove \(account.email) from the app?"), isPresented: $confirmRemove) {
+            Button(L("Xoá", "Remove"), role: .destructive) { store.remove(account.id) }
         } message: {
-            Text("App sẽ quên login và token dự phòng đã lưu của tài khoản này. Tài khoản Claude của bạn không bị ảnh hưởng.")
+            Text(L("App sẽ quên login và token dự phòng đã lưu của tài khoản này. Tài khoản Claude của bạn không bị ảnh hưởng.", "The app will forget this account's saved login and backup token. Your Claude account itself is not affected."))
         }
     }
 
@@ -222,10 +223,10 @@ struct AccountDetail: View {
             }
             Spacer()
             if isActive {
-                Label("Đang dùng", systemImage: "checkmark.circle.fill")
+                Label(L("Đang dùng", "In use"), systemImage: "checkmark.circle.fill")
                     .foregroundStyle(.green).font(.headline)
             } else {
-                Button("Dùng tài khoản này") { store.switchTo(account.id) }
+                Button(L("Dùng tài khoản này", "Use this account")) { store.switchTo(account.id) }
                     .buttonStyle(.borderedProminent).controlSize(.large)
                     .disabled(store.health(account).level == .expired)
             }
@@ -234,22 +235,22 @@ struct AccountDetail: View {
 
     private var loginCard: some View {
         let health = store.health(account)
-        return Card(title: "Đăng nhập", icon: "person.badge.key") {
+        return Card(title: L("Đăng nhập", "Login"), icon: "person.badge.key") {
             HealthLine(level: health.level, text: health.text)
             Text(loginExplanation(health.level))
                 .font(.callout).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             if account.loginUsable {
                 Grid(alignment: .leading, horizontalSpacing: 12, verticalSpacing: 4) {
                     GridRow {
-                        Text("Gia hạn gần nhất").foregroundStyle(.secondary)
-                        Text(account.lastRenewedAt.map { Fmt.ago($0) } ?? "chưa ghi nhận")
+                        Text(L("Gia hạn gần nhất", "Last renewed")).foregroundStyle(.secondary)
+                        Text(account.lastRenewedAt.map { Fmt.ago($0) } ?? L("chưa ghi nhận", "not recorded"))
                     }
                     GridRow {
-                        Text("Lần tới").foregroundStyle(.secondary)
+                        Text(L("Lần tới", "Next")).foregroundStyle(.secondary)
                         Text(nextRenewalText)
                     }
                     GridRow {
-                        Text("Hết hạn login").foregroundStyle(.secondary)
+                        Text(L("Hết hạn login", "Login expires")).foregroundStyle(.secondary)
                         Text(Fmt.date(account.refreshTokenExpiresAt))
                     }
                 }
@@ -257,7 +258,7 @@ struct AccountDetail: View {
             }
             HStack {
                 if health.level == .expired || !account.loginUsable {
-                    AddAccountMenu(email: account.email) { Text("Đăng nhập lại") }.fixedSize()
+                    AddAccountMenu(email: account.email) { Text(L("Đăng nhập lại", "Log in again")) }.fixedSize()
                 } else {
                     renewButton
                 }
@@ -273,15 +274,15 @@ struct AccountDetail: View {
         switch level {
         case .good, .soon:
             guard store.state.autoKeepAlive else {
-                return "Tự gia hạn hằng ngày đang tắt. Bật lại trong ⚙ để login không bao giờ hết hạn."
+                return L("Tự gia hạn hằng ngày đang tắt. Bật lại trong ⚙ để login không bao giờ hết hạn.", "Daily renewal is off. Turn it on in ⚙ to keep tokens fresh.")
             }
             return isActive
-                ? "App gia hạn mọi tài khoản ít nhất 1 lần mỗi ngày, kể cả tài khoản đang dùng, để token luôn mới. Lượt nào Claude Code đã tự làm mới thì app bỏ qua. Hạn login (khoảng 30 ngày từ lúc đăng nhập) không phải lúc nào cũng được máy chủ đẩy thêm — gần hết hạn thì token dự phòng 1 năm hoặc đăng nhập lại giữ tài khoản chạy."
-                : "App gia hạn mọi tài khoản ít nhất 1 lần mỗi ngày trong hồ sơ riêng của tài khoản này, không đổi tài khoản đang dùng: đọc /usage (miễn phí) để Claude Code lấy token mới, chỉ khi không được mới gửi 1 câu rất nhỏ bằng haiku. Hạn login không phải lúc nào cũng được đẩy thêm — gần hết hạn thì token dự phòng 1 năm hoặc đăng nhập lại giữ tài khoản chạy."
+                ? L("App gia hạn mọi tài khoản ít nhất 1 lần mỗi ngày, kể cả tài khoản đang dùng, để token luôn mới. Lượt nào Claude Code đã tự làm mới thì app bỏ qua. Hạn login (khoảng 30 ngày từ lúc đăng nhập) không phải lúc nào cũng được máy chủ đẩy thêm — gần hết hạn thì token dự phòng 1 năm hoặc đăng nhập lại giữ tài khoản chạy.", "The app renews every account at least once a day, including the one in use, so its token stays fresh. If Claude Code already refreshed it that day, the app skips it. The login's own expiry (about 30 days from login) isn't always extended by the server — near the end, the 1-year backup token or a new login keeps the account working.")
+                : L("App gia hạn mọi tài khoản ít nhất 1 lần mỗi ngày trong hồ sơ riêng của tài khoản này, không đổi tài khoản đang dùng: đọc /usage (miễn phí) để Claude Code lấy token mới, chỉ khi không được mới gửi 1 câu rất nhỏ bằng haiku. Hạn login không phải lúc nào cũng được đẩy thêm — gần hết hạn thì token dự phòng 1 năm hoặc đăng nhập lại giữ tài khoản chạy.", "The app renews every account at least once a day in that account's own profile, without changing the account in use: it reads /usage (free) so Claude Code gets a new token, and only if that doesn't work sends one tiny haiku message. The login's expiry isn't always extended — near the end, the 1-year backup token or a new login keeps the account working.")
         case .backup:
-            return "Login thường đã hết hạn hoặc đang tắt, claude dùng token dự phòng. Đăng nhập lại để có đủ tính năng."
+            return L("Login thường đã hết hạn hoặc đang tắt, claude dùng token dự phòng. Đăng nhập lại để có đủ tính năng.", "The regular login has expired or is turned off, so claude uses the backup token. Log in again for every feature.")
         case .expired:
-            return "Login đã hết hạn và chưa có token dự phòng. Bấm Đăng nhập lại và chọn đúng \(account.email)."
+            return L("Login đã hết hạn và chưa có token dự phòng. Bấm Đăng nhập lại và chọn đúng \(account.email).", "The login has expired and there is no backup token. Click Log in again and pick \(account.email).")
         }
     }
 
@@ -292,13 +293,13 @@ struct AccountDetail: View {
         TimelineView(.everyMinute) { _ in
             if let exp = account.accessTokenExpiresAt, exp > Date(), !renewing {
                 VStack(alignment: .leading, spacing: 4) {
-                    Button("Gia hạn được sau \(Fmt.reset(exp))") {}.disabled(true)
-                    Text("Token hiện tại còn hạn. Claude Code chỉ đổi token khi token cũ hết hạn, nên chưa gia hạn sớm hơn được.")
+                    Button(L("Gia hạn được sau \(Fmt.reset(exp))", "Can renew after \(Fmt.reset(exp))")) {}.disabled(true)
+                    Text(L("Token hiện tại còn hạn. Claude Code chỉ đổi token khi token cũ hết hạn, nên chưa gia hạn sớm hơn được.", "The current token is still valid. Claude Code only swaps tokens once the old one expires, so it can't be renewed earlier."))
                         .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
                 }
             } else {
                 HStack(spacing: 8) {
-                    Button(renewing ? "Đang gia hạn…" : "Gia hạn ngay") {
+                    Button(renewing ? L("Đang gia hạn…", "Renewing…") : L("Gia hạn ngay", "Renew now")) {
                         Task { await store.refreshLogin(account.id) }
                     }
                     .disabled(renewing)
@@ -309,60 +310,60 @@ struct AccountDetail: View {
     }
 
     private var nextRenewalText: String {
-        guard store.state.autoKeepAlive else { return "tự gia hạn đang tắt" }
-        guard let next = store.nextRenewal(account), next > Date() else { return "trong vài phút tới" }
+        guard store.state.autoKeepAlive else { return L("tự gia hạn đang tắt", "daily renewal is off") }
+        guard let next = store.nextRenewal(account), next > Date() else { return L("trong vài phút tới", "within a few minutes") }
         return Fmt.reset(next)
     }
 
     private var backupCard: some View {
-        Card(title: "Token dự phòng 1 năm", icon: "shield.lefthalf.filled") {
+        Card(title: L("Token dự phòng 1 năm", "1-year backup token"), icon: "shield.lefthalf.filled") {
             if account.hasSetupToken {
                 HStack(spacing: 6) {
                     Image(systemName: "checkmark.seal.fill").foregroundStyle(.green)
-                    Text("Đã có. Hết hạn khoảng \(Fmt.date(account.setupTokenExpiresAt)).")
+                    Text(L("Đã có. Hết hạn khoảng \(Fmt.date(account.setupTokenExpiresAt)).", "Saved. Expires around \(Fmt.date(account.setupTokenExpiresAt))."))
                 }
-                Text("Khi login thường hết hạn, app tự chuyển claude sang token này để bạn không bị đăng xuất.")
+                Text(L("Khi login thường hết hạn, app tự chuyển claude sang token này để bạn không bị đăng xuất.", "When the regular login expires, the app switches claude to this token so you aren't logged out."))
                     .font(.callout).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
                 DisclosureGroup(isExpanded: $advancedOpen) {
                     VStack(alignment: .leading, spacing: 8) {
-                        Toggle("Luôn dùng token dự phòng thay cho login thường", isOn: Binding(
+                        Toggle(L("Luôn dùng token dự phòng thay cho login thường", "Always use the backup token instead of the regular login"), isOn: Binding(
                             get: { account.preferSetupToken },
                             set: { store.setPreferSetupToken($0, for: account.id) }))
                         HStack {
-                            Button("Tạo token mới…") { store.createSetupToken() }
-                            Button("Xoá token", role: .destructive) { store.removeSetupToken(account.id) }
+                            Button(L("Tạo token mới…", "Create a new token…")) { store.createSetupToken() }
+                            Button(L("Xoá token", "Remove token"), role: .destructive) { store.removeSetupToken(account.id) }
                         }
                     }
                     .padding(.top, 6)
                 } label: {
                     // On macOS only the chevron toggles a DisclosureGroup; make the
                     // whole row a target.
-                    Text("Nâng cao")
+                    Text(L("Nâng cao", "Advanced"))
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .contentShape(Rectangle())
                         .onTapGesture { withAnimation(.easeInOut(duration: 0.2)) { advancedOpen.toggle() } }
                 }
             } else {
-                Text("Login thường chỉ sống khoảng 30 ngày nếu không dùng. Token này sống khoảng 1 năm và giữ bạn luôn đăng nhập.")
+                Text(L("Login thường chỉ sống khoảng 30 ngày nếu không dùng. Token này sống khoảng 1 năm và giữ bạn luôn đăng nhập.", "A regular login only lasts about 30 days if unused. This token lasts about a year and keeps you logged in."))
                     .font(.callout).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
-                stepRow(1, "Tạo token") {
-                    Button("Mở Terminal và tạo token") { store.createSetupToken() }
-                    Text("Trình duyệt mở ra — đăng nhập đúng \(account.email). Terminal in ra một dòng bắt đầu bằng sk-ant-oat…, hãy copy dòng đó.")
+                stepRow(1, L("Tạo token", "Create the token")) {
+                    Button(L("Mở Terminal và tạo token", "Open Terminal and create a token")) { store.createSetupToken() }
+                    Text(L("Trình duyệt mở ra — đăng nhập đúng \(account.email). Terminal in ra một dòng bắt đầu bằng sk-ant-oat…, hãy copy dòng đó.", "A browser opens — sign in as \(account.email). Terminal prints a line starting with sk-ant-oat…; copy that line."))
                         .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
                 }
-                stepRow(2, "Lưu token") {
+                stepRow(2, L("Lưu token", "Save the token")) {
                     if let clip = clipboardToken {
                         Button {
                             save(clip) { clipboardToken = nil }
                         } label: {
-                            Label("Lưu token vừa copy (…\(clip.suffix(6)))", systemImage: "doc.on.clipboard")
+                            Label(L("Lưu token vừa copy (…\(clip.suffix(6)))", "Save the copied token (…\(clip.suffix(6)))"), systemImage: "doc.on.clipboard")
                         }
                         .buttonStyle(.borderedProminent)
                         .disabled(saving)
                     }
                     HStack {
-                        SecureField(clipboardToken == nil ? "Dán token vào đây" : "hoặc dán token khác", text: $token)
-                        Button("Lưu") {
+                        SecureField(clipboardToken == nil ? L("Dán token vào đây", "Paste the token here") : L("hoặc dán token khác", "or paste another token"), text: $token)
+                        Button(L("Lưu", "Save")) {
                             save(token) { token = "" }
                         }
                         .disabled(token.isEmpty || saving)
@@ -392,18 +393,18 @@ struct AccountDetail: View {
     }
 
     private var otherCard: some View {
-        Card(title: "Khác", icon: "slider.horizontal.3") {
+        Card(title: L("Khác", "Other"), icon: "slider.horizontal.3") {
             HStack {
-                TextField("Tên gợi nhớ, ví dụ: Công ty, Cá nhân", text: $label)
+                TextField(L("Tên gợi nhớ, ví dụ: Công ty, Cá nhân", "Nickname, e.g. Work, Personal"), text: $label)
                     .onSubmit { store.setLabel(label, for: account.id) }
-                Button("Lưu tên") { store.setLabel(label, for: account.id) }
+                Button(L("Lưu tên", "Save name")) { store.setLabel(label, for: account.id) }
                     .disabled(label == (account.label ?? ""))
             }
             HStack {
-                Button("Xoá tài khoản khỏi app", role: .destructive) { confirmRemove = true }
+                Button(L("Xoá tài khoản khỏi app", "Remove account from app"), role: .destructive) { confirmRemove = true }
                     .disabled(isActive)
                 if isActive {
-                    Text("Chuyển sang tài khoản khác trước khi xoá.").font(.caption).foregroundStyle(.secondary)
+                    Text(L("Chuyển sang tài khoản khác trước khi xoá.", "Switch to another account before removing.")).font(.caption).foregroundStyle(.secondary)
                 }
             }
         }

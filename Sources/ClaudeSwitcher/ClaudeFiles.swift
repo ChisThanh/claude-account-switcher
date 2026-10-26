@@ -13,8 +13,8 @@ enum ClaudeFiles {
         case unreadable(URL), rename(URL)
         var errorDescription: String? {
             switch self {
-            case .unreadable(let u): return "Không đọc được \(u.path)"
-            case .rename(let u): return "Không ghi được \(u.path)"
+            case .unreadable(let u): return L("Không đọc được \(u.path)", "Couldn't read \(u.path)")
+            case .rename(let u): return L("Không ghi được \(u.path)", "Couldn't write \(u.path)")
             }
         }
     }

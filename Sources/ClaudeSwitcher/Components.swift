@@ -92,7 +92,7 @@ struct RestartHint: View {
     var body: some View {
         HStack(alignment: .top, spacing: 8) {
             Image(systemName: "arrow.clockwise.circle.fill").foregroundStyle(.orange)
-            Text("\(count) phiên claude đang mở vẫn dùng tài khoản cũ. Thoát và mở lại chúng (gõ /exit rồi chạy claude) để dùng tài khoản mới.")
+            Text(L("\(count) phiên claude đang mở vẫn dùng tài khoản cũ. Thoát và mở lại chúng (gõ /exit rồi chạy claude) để dùng tài khoản mới.", "\(count) open claude sessions still use the old account. Quit and reopen them (type /exit, then run claude) to use the new one."))
                 .font(.callout).fixedSize(horizontal: false, vertical: true)
         }
         .padding(10)
@@ -110,28 +110,28 @@ struct WaitingForLogin: View {
             HStack(spacing: 10) {
                 ProgressView().controlSize(.small)
                 VStack(alignment: .leading, spacing: 2) {
-                    Text("Đang chờ bạn đăng nhập…").font(.callout.weight(.medium))
+                    Text(L("Đang chờ bạn đăng nhập…", "Waiting for you to log in…")).font(.callout.weight(.medium))
                     Text(store.loginURL == nil
-                         ? "Đang lấy link đăng nhập…"
+                         ? L("Đang lấy link đăng nhập…", "Getting the sign-in link…")
                          : store.loginNeedsCode
-                            ? "Đăng nhập trên trình duyệt. Trang sẽ hiện một mã — copy và dán vào ô bên dưới."
-                            : "Đăng nhập trên trình duyệt vừa mở. App tự nhận tài khoản khi xong.")
+                            ? L("Đăng nhập trên trình duyệt. Trang sẽ hiện một mã — copy và dán vào ô bên dưới.", "Log in in the browser. The page will show a code — copy it and paste it below.")
+                            : L("Đăng nhập trên trình duyệt vừa mở. App tự nhận tài khoản khi xong.", "Log in in the browser that just opened. The app picks up the account when you're done."))
                         .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
                 }
                 Spacer(minLength: 0)
-                Button("Huỷ") { store.cancelAdding() }.controlSize(.small)
+                Button(L("Huỷ", "Cancel")) { store.cancelAdding() }.controlSize(.small)
             }
             if store.loginURL != nil {
                 HStack(spacing: 6) {
-                    TextField(store.loginNeedsCode ? "Dán mã từ trang đăng nhập" : "Trang hiện mã? Dán vào đây", text: $code)
+                    TextField(store.loginNeedsCode ? L("Dán mã từ trang đăng nhập", "Paste the code from the sign-in page") : L("Trang hiện mã? Dán vào đây", "Page shows a code? Paste it here"), text: $code)
                         .textFieldStyle(.roundedBorder)
                         .controlSize(.small)
                         .onSubmit(send)
-                    Button("Gửi mã", action: send)
+                    Button(L("Gửi mã", "Send code"), action: send)
                         .controlSize(.small)
                         .disabled(code.trimmingCharacters(in: .whitespaces).isEmpty)
                 }
-                Menu("Mở lại link…") {
+                Menu(L("Mở lại link…", "Reopen link…")) {
                     LoginModeItems { store.openLoginURL($0) }
                 }
                 .controlSize(.small)
@@ -157,25 +157,25 @@ struct LoginModeItems: View {
     var body: some View {
         let apps = Self.privateApps
         if apps.isEmpty {
-            Text("Trình duyệt trên máy không mở được cửa sổ ẩn danh — dùng Chỉ copy link")
+            Text(L("Trình duyệt trên máy không mở được cửa sổ ẩn danh — dùng Chỉ copy link", "No browser here can open a private window — use Copy link only"))
         }
         ForEach(apps) { app in
             Button {
                 pick(.privateWindow(app))
             } label: {
-                Label("Cửa sổ ẩn danh — \(app.name)", systemImage: "eyeglasses")
+                Label(L("Cửa sổ ẩn danh — \(app.name)", "Private window — \(app.name)"), systemImage: "eyeglasses")
             }
         }
         Button {
             pick(.normal)
         } label: {
-            Label("Trình duyệt chính — \(LoginBrowser.defaultBrowserName)", systemImage: "safari")
+            Label(L("Trình duyệt chính — \(LoginBrowser.defaultBrowserName)", "Main browser — \(LoginBrowser.defaultBrowserName)"), systemImage: "safari")
         }
         Divider()
         Button {
             pick(.copyOnly)
         } label: {
-            Label("Chỉ copy link đăng nhập", systemImage: "doc.on.doc")
+            Label(L("Chỉ copy link đăng nhập", "Copy sign-in link only"), systemImage: "doc.on.doc")
         }
     }
 }
@@ -188,7 +188,7 @@ struct AddAccountMenu<MenuLabel: View>: View {
 
     var body: some View {
         Menu {
-            Section(email == nil ? "Mở trang đăng nhập bằng" : "Đăng nhập lại \(email!) bằng") {
+            Section(email == nil ? L("Mở trang đăng nhập bằng", "Open the sign-in page in") : L("Đăng nhập lại \(email!) bằng", "Log in again as \(email!) in")) {
                 LoginModeItems { store.addAccount(email: email, open: $0) }
             }
         } label: {
@@ -243,13 +243,13 @@ struct UsageDetail: View {
                         }
                         UsageBar(percent: w.currentPercent)
                         if let reset = w.resetsAt {
-                            Text(w.currentPercent < w.percent ? "Đã reset" : "Reset \(Fmt.reset(reset))")
+                            Text(w.currentPercent < w.percent ? L("Đã reset", "Has reset") : L("Reset \(Fmt.reset(reset))", "Resets \(Fmt.reset(reset))"))
                                 .font(.caption2).foregroundStyle(.secondary)
                         }
                     }
                 }
             } else {
-                Text(store.canReadUsage(account) ? "Chưa có số liệu — bấm Cập nhật." : "Không đọc được usage khi đang dùng token dự phòng hoặc login đã hết hạn.")
+                Text(store.canReadUsage(account) ? L("Chưa có số liệu — bấm Cập nhật.", "No data yet — click Refresh.") : L("Không đọc được usage khi đang dùng token dự phòng hoặc login đã hết hạn.", "Usage can't be read while on the backup token or with an expired login."))
                     .font(.callout).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             }
             UsageFooter(account: account)
@@ -264,22 +264,22 @@ struct UsageFooter: View {
     var body: some View {
         HStack(spacing: 6) {
             if let usage = account.usage {
-                Text("Cập nhật \(Fmt.ago(usage.fetchedAt))").font(.caption2).foregroundStyle(.secondary)
+                Text(L("Cập nhật \(Fmt.ago(usage.fetchedAt))", "Updated \(Fmt.ago(usage.fetchedAt))")).font(.caption2).foregroundStyle(.secondary)
             }
             Spacer()
             if store.usageLoading.contains(account.id) {
                 ProgressView().controlSize(.mini)
-                Text("Đang đọc…").font(.caption2).foregroundStyle(.secondary)
+                Text(L("Đang đọc…", "Reading…")).font(.caption2).foregroundStyle(.secondary)
             } else if store.canReadUsage(account) {
                 Button {
                     Task { await store.refreshUsage(account.id) }
                 } label: {
-                    Label("Cập nhật", systemImage: "arrow.clockwise").font(.caption)
+                    Label(L("Cập nhật", "Refresh"), systemImage: "arrow.clockwise").font(.caption)
                 }
                 .buttonStyle(.borderless)
                 .help(account.id == store.state.activeId
-                      ? "Đọc lại usage"
-                      : "Đọc usage trong hồ sơ riêng của tài khoản này — không đổi tài khoản đang dùng")
+                      ? L("Đọc lại usage", "Read usage again")
+                      : L("Đọc usage trong hồ sơ riêng của tài khoản này — không đổi tài khoản đang dùng", "Reads usage in this account's own profile — the account in use doesn't change"))
             }
         }
     }
@@ -300,7 +300,7 @@ struct UsageCompact: View {
             HStack(spacing: 10) {
                 if store.usageLoading.contains(account.id) {
                     ProgressView().controlSize(.mini)
-                    Text("Đang đọc usage…").font(.caption2).foregroundStyle(.secondary)
+                    Text(L("Đang đọc usage…", "Reading usage…")).font(.caption2).foregroundStyle(.secondary)
                 } else if let usage = account.usage {
                     ForEach([usage.session, usage.week].compactMap { $0 }) { w in
                         HStack(spacing: 4) {
@@ -311,13 +311,13 @@ struct UsageCompact: View {
                         }
                     }
                 } else {
-                    Text("Chưa có usage").font(.caption2).foregroundStyle(.tertiary)
+                    Text(L("Chưa có usage", "No usage yet")).font(.caption2).foregroundStyle(.tertiary)
                 }
             }
             // Own line: next to the bars it squeezed the labels into "…" in narrow rows.
             if let usage = account.usage, account.id != store.state.activeId,
                !store.usageLoading.contains(account.id) {
-                Text("usage đo \(Fmt.ago(usage.fetchedAt))").font(.caption2).foregroundStyle(.tertiary)
+                Text(L("usage đo \(Fmt.ago(usage.fetchedAt))", "usage from \(Fmt.ago(usage.fetchedAt))")).font(.caption2).foregroundStyle(.tertiary)
             }
         }
     }

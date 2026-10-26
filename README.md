@@ -10,6 +10,10 @@ App trên thanh menu macOS để giữ nhiều tài khoản Claude Code và chuy
 
 Cần macOS 15 và Xcode (Swift 6). App được ký ad-hoc, không cần Apple Developer ID.
 
+## Ngôn ngữ
+
+App có tiếng Việt (mặc định) và tiếng Anh. Đổi trong menu ⚙ → **Ngôn ngữ / Language**. Đổi xong, panel và cửa sổ hiển thị lại ngay. Trong code, mỗi câu được viết song ngữ ngay tại chỗ dùng: `L("tiếng Việt", "English")`.
+
 ## Cách hoạt động
 
 Claude Code lưu login ở hai chỗ:

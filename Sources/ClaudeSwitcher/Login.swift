@@ -151,7 +151,7 @@ enum LoginBrowser {
     private static let probe = URL(string: "https://claude.ai")!
 
     static var defaultBrowserName: String {
-        NSWorkspace.shared.urlForApplication(toOpen: probe).map(displayName) ?? "trình duyệt"
+        NSWorkspace.shared.urlForApplication(toOpen: probe).map(displayName) ?? L("trình duyệt", "browser")
     }
 
     /// Browsers that can open a private window, the default one first.

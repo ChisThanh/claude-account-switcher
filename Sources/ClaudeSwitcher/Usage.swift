@@ -14,11 +14,11 @@ struct UsageWindow: Codable, Equatable, Identifiable {
 
     var title: String {
         switch label {
-        case Self.sessionLabel: return "Phiên 5 giờ"
-        case Self.weekLabel: return "Tuần · mọi model"
+        case Self.sessionLabel: return L("Phiên 5 giờ", "5-hour session")
+        case Self.weekLabel: return L("Tuần · mọi model", "Week · all models")
         default:
             if label.hasPrefix("Current week ("), let open = label.firstIndex(of: "(") {
-                return "Tuần · " + label[label.index(after: open)...].dropLast()
+                return L("Tuần · ", "Week · ") + label[label.index(after: open)...].dropLast()
             }
             return label
         }
@@ -26,8 +26,8 @@ struct UsageWindow: Codable, Equatable, Identifiable {
 
     var shortTitle: String {
         switch label {
-        case Self.sessionLabel: return "Phiên"
-        case Self.weekLabel: return "Tuần"
+        case Self.sessionLabel: return L("Phiên", "Session")
+        case Self.weekLabel: return L("Tuần", "Week")
         default: return title
         }
     }

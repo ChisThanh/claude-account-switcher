@@ -49,6 +49,8 @@ final class AccountStore {
     private(set) var loginNeedsCode = false
     @ObservationIgnored private var loginProcess: LoginProcess?
     private(set) var launchAtLogin = SMAppService.mainApp.status == .enabled
+    /// Views key their content on this, so a change redraws every string.
+    private(set) var language = L10n.current
     /// True when no state file existed at startup.
     private(set) var isFirstLaunch = false
 
@@ -214,7 +216,7 @@ final class AccountStore {
             if state.activeId != oaId {
                 state.activeId = oaId
                 try? await applyEnvMode(for: acc)
-                if !isNew { announce("Claude đang dùng \(acc.email).", kind: .success) }
+                if !isNew { announce(L("Claude đang dùng \(acc.email).", "Claude is now using \(acc.email)."), kind: .success) }
             } else if state.activeUsesSetupToken, acc.loginUsable, !acc.preferSetupToken {
                 try? await applyEnvMode(for: acc)   // logged in again: back to the full login
             }
@@ -233,7 +235,7 @@ final class AccountStore {
                 savedRaw[id] = written
                 lastLiveRaw = written
             }
-            notifyOnce("stale-\(owner.id)", "Một phiên Claude cũ vẫn chạy bằng \(owner.email). Đã đặt lại \(active.email) — hãy khởi động lại phiên đó.")
+            notifyOnce("stale-\(owner.id)", L("Một phiên Claude cũ vẫn chạy bằng \(owner.email). Đã đặt lại \(active.email) — hãy khởi động lại phiên đó.", "An older Claude session is still running as \(owner.email). Switched back to \(active.email) — restart that session."))
         }
         let data = active.oauthAccount
         _ = await io { try? ClaudeFiles.setOauthAccount(data) }
@@ -253,11 +255,11 @@ final class AccountStore {
         let relogin = addingEmail?.caseInsensitiveCompare(acc.email) == .orderedSame
         clearAddingState()
         if isNew {
-            announce("Đã thêm \(acc.email) và đang dùng tài khoản này.", kind: .success)
+            announce(L("Đã thêm \(acc.email) và đang dùng tài khoản này.", "Added \(acc.email) and switched to it."), kind: .success)
         } else if relogin {
-            announce("Đã đăng nhập lại \(acc.email).", kind: .success)
+            announce(L("Đã đăng nhập lại \(acc.email).", "Logged in again as \(acc.email)."), kind: .success)
         } else {
-            announce("Bạn vừa đăng nhập lại \(acc.email) — tài khoản này đã có. Trình duyệt chính đang đăng nhập sẵn tài khoản này. Để thêm tài khoản khác: bấm Thêm tài khoản và chọn Cửa sổ ẩn danh.",
+            announce(L("Bạn vừa đăng nhập lại \(acc.email) — tài khoản này đã có. Trình duyệt chính đang đăng nhập sẵn tài khoản này. Để thêm tài khoản khác: bấm Thêm tài khoản và chọn Cửa sổ ẩn danh.", "You just logged in again as \(acc.email) — this account is already here. Your main browser is signed in to it. To add a different account, click Add account and choose Private window."),
                      kind: .warning)
         }
     }
@@ -275,7 +277,7 @@ final class AccountStore {
                 if Keychain.storedLogin(id) == raw { return (true, false) }
                 return (Keychain.saveLogin(id, raw), true)
             }
-            guard ok else { return announce("Không lưu được login vào Keychain", kind: .error) }
+            guard ok else { return announce(L("Không lưu được login vào Keychain", "Couldn't save the login to the Keychain"), kind: .error) }
             savedRaw[id] = raw
             renewed = changed
         }
@@ -313,7 +315,7 @@ final class AccountStore {
         await syncLocked()
         guard let acc = account(id) else { return false }
         if !acc.loginUsable && !acc.hasSetupToken {
-            announce("\(acc.email): login đã hết hạn và chưa có token dự phòng. Hãy đăng nhập lại.", kind: .error)
+            announce(L("\(acc.email): login đã hết hạn và chưa có token dự phòng. Hãy đăng nhập lại.", "\(acc.email): the login has expired and there is no backup token. Log in again."), kind: .error)
             return false
         }
         let (hadLogin, written) = await io { () -> (Bool, String?) in
@@ -322,7 +324,7 @@ final class AccountStore {
         }
         if hadLogin {
             guard let written else {
-                announce("Không ghi được login vào Keychain", kind: .error)
+                announce(L("Không ghi được login vào Keychain", "Couldn't write the login to the Keychain"), kind: .error)
                 return false
             }
             savedRaw[id] = written
@@ -341,8 +343,8 @@ final class AccountStore {
         save()
         if !quiet {
             staleSessions = await io { Self.runningClaudePids() }
-            let mode = state.activeUsesSetupToken ? " bằng token dự phòng" : ""
-            announce("Đã chuyển sang \(acc.title)\(mode).", kind: .success)
+            let mode = state.activeUsesSetupToken ? L(" bằng token dự phòng", " with the backup token") : ""
+            announce(L("Đã chuyển sang \(acc.title)\(mode).", "Switched to \(acc.title)\(mode)."), kind: .success)
             refreshActiveUsage(maxAge: 0)
         }
         return true
@@ -375,7 +377,7 @@ final class AccountStore {
                 return try await ioThrowing { try ClaudeFiles.setEnvToken(nil) }
             }
         }
-        announce("~/.claude/settings.json có \(ClaudeFiles.envKey) không do app đặt — nó đang đè lên login.", kind: .error)
+        announce(L("~/.claude/settings.json có \(ClaudeFiles.envKey) không do app đặt — nó đang đè lên login.", "~/.claude/settings.json has a \(ClaudeFiles.envKey) the app didn't set — it overrides the login."), kind: .error)
     }
 
     // MARK: Keep-alive
@@ -383,21 +385,21 @@ final class AccountStore {
     private func checkHealthLocked() async {
         for acc in state.accounts {
             if let exp = acc.setupTokenExpiresAt, exp.daysFromNow < 30 {
-                notifyOnce("setup-\(acc.id)", "Token dự phòng của \(acc.email) còn khoảng \(max(exp.daysFromNow, 0)) ngày. Hãy chạy lại claude setup-token.")
+                notifyOnce("setup-\(acc.id)", L("Token dự phòng của \(acc.email) còn khoảng \(max(exp.daysFromNow, 0)) ngày. Hãy chạy lại claude setup-token.", "The backup token for \(acc.email) has about \(max(exp.daysFromNow, 0)) days left. Run claude setup-token again."))
             }
             guard let exp = acc.refreshTokenExpiresAt else { continue }
             if exp <= Date() {
                 if acc.id == state.activeId, !state.activeUsesSetupToken, acc.hasSetupToken {
                     try? await applyEnvMode(for: acc)
                     save()
-                    notifyOnce("fallback-\(acc.id)", "Login của \(acc.email) đã hết hạn — đã chuyển sang token dự phòng.")
+                    notifyOnce("fallback-\(acc.id)", L("Login của \(acc.email) đã hết hạn — đã chuyển sang token dự phòng.", "The login for \(acc.email) has expired — switched to the backup token."))
                 } else if !acc.hasSetupToken {
-                    notifyOnce("expired-\(acc.id)", "Login của \(acc.email) đã hết hạn. Hãy đăng nhập lại hoặc thêm token dự phòng.")
+                    notifyOnce("expired-\(acc.id)", L("Login của \(acc.email) đã hết hạn. Hãy đăng nhập lại hoặc thêm token dự phòng.", "The login for \(acc.email) has expired. Log in again or add a backup token."))
                 }
             } else if !acc.hasSetupToken, exp.timeIntervalSinceNow < Self.keepAliveWindow {
                 // Refreshing doesn't always push the login's expiry, so near the end
                 // only a new login or the 1-year backup token keeps it working.
-                notifyOnce("soon-\(acc.id)", "Login của \(acc.email) còn \(exp.daysFromNow) ngày. Hãy đăng nhập lại hoặc thêm token dự phòng 1 năm.")
+                notifyOnce("soon-\(acc.id)", L("Login của \(acc.email) còn \(exp.daysFromNow) ngày. Hãy đăng nhập lại hoặc thêm token dự phòng 1 năm.", "The login for \(acc.email) has \(exp.daysFromNow) days left. Log in again or add a 1-year backup token."))
             }
         }
     }
@@ -450,7 +452,7 @@ final class AccountStore {
         guard let acc = account(id), acc.loginUsable, !renewingIds.contains(id) else { return }
         if let exp = acc.accessTokenExpiresAt, exp > Date() {
             if manual {
-                renewNotes[id] = Banner(kind: .info, text: "Token còn hạn đến \(Fmt.reset(exp)). Claude Code chỉ đổi token khi token cũ hết hạn, nên gia hạn được sau giờ đó.")
+                renewNotes[id] = Banner(kind: .info, text: L("Token còn hạn đến \(Fmt.reset(exp)). Claude Code chỉ đổi token khi token cũ hết hạn, nên gia hạn được sau giờ đó.", "The token is valid until \(Fmt.reset(exp)). Claude Code only swaps tokens once the old one expires, so renewing works after that."))
             }
             return
         }
@@ -468,15 +470,15 @@ final class AccountStore {
         let after = account(id)?.refreshTokenExpiresAt
         if result.renewed {
             if manual {
-                let token = account(id)?.accessTokenExpiresAt.map { " Token mới có hạn đến \(Fmt.reset($0))." } ?? ""
+                let token = account(id)?.accessTokenExpiresAt.map { L(" Token mới có hạn đến \(Fmt.reset($0)).", " The new token is valid until \(Fmt.reset($0)).") } ?? ""
                 let login = after == before
-                    ? "Hạn login vẫn là \(Fmt.date(after)) — máy chủ không đẩy thêm lần này."
-                    : "Hạn login \(Fmt.date(before)) → \(Fmt.date(after))."
-                renewNotes[id] = Banner(kind: .success, text: "Đã gia hạn.\(token) \(login)")
+                    ? L("Hạn login vẫn là \(Fmt.date(after)) — máy chủ không đẩy thêm lần này.", "Login expiry is still \(Fmt.date(after)) — the server didn't extend it this time.")
+                    : L("Hạn login \(Fmt.date(before)) → \(Fmt.date(after)).", "Login expiry \(Fmt.date(before)) → \(Fmt.date(after)).")
+                renewNotes[id] = Banner(kind: .success, text: L("Đã gia hạn.\(token) \(login)", "Renewed.\(token) \(login)"))
             }
         } else {
             let why = result.error.trimmingCharacters(in: .whitespacesAndNewlines).prefix(160)
-            let text = "Không gia hạn được \(acc.title)" + (why.isEmpty ? "." : ": \(why)")
+            let text = L("Không gia hạn được \(acc.title)", "Couldn't renew \(acc.title)") + (why.isEmpty ? "." : ": \(why)")
             if manual { renewNotes[id] = Banner(kind: .error, text: text) } else { notifyOnce("renew-fail-\(id)", text) }
         }
     }
@@ -529,7 +531,7 @@ final class AccountStore {
             return (dir, raw)
         }
         guard let prepared else {
-            result.error = "không chuẩn bị được hồ sơ riêng"
+            result.error = L("không chuẩn bị được hồ sơ riêng", "couldn't prepare the account's own profile")
             return result
         }
         result.usage = await fetchUsage(configDir: prepared.dir)
@@ -594,7 +596,7 @@ final class AccountStore {
     func refreshUsage(_ id: String) async {
         guard let acc = account(id), !usageLoading.contains(id) else { return }
         guard canReadUsage(acc) else {
-            return announce("\(acc.title): cần login thường còn hạn để đọc usage.", kind: .warning)
+            return announce(L("\(acc.title): cần login thường còn hạn để đọc usage.", "\(acc.title): needs a valid regular login to read usage."), kind: .warning)
         }
         await readUsage(id, reportFailure: true)
     }
@@ -606,7 +608,10 @@ final class AccountStore {
         // the user switched meanwhile.
         if live, state.activeId != id { return }
         guard let usage = result.usage else {
-            if reportFailure { announce("Không đọc được usage của \(account(id)?.title ?? "").", kind: .error) }
+            if reportFailure {
+                let name = account(id)?.title ?? ""
+                announce(L("Không đọc được usage của \(name).", "Couldn't read usage for \(name)."), kind: .error)
+            }
             return
         }
         update(id) {
@@ -641,7 +646,7 @@ final class AccountStore {
     /// way the user picked; with an email the page is pre-filled (logging an
     /// expired account back in).
     func addAccount(email: String? = nil, open mode: LoginOpenMode = .normal) {
-        guard let claude = Self.claudePath else { return announce("Không tìm thấy lệnh claude", kind: .error) }
+        guard let claude = Self.claudePath else { return announce(L("Không tìm thấy lệnh claude", "claude command not found"), kind: .error) }
         loginProcess?.cancel()
         Task {
             await serial {
@@ -664,13 +669,13 @@ final class AccountStore {
                     } else if !cancelled, self.addingSince != nil {
                         self.clearAddingState()
                         let tail = output.split(separator: "\n").suffix(2).joined(separator: " ").prefix(200)
-                        self.announce("Đăng nhập không thành công: \(tail)", kind: .error)
+                        self.announce(L("Đăng nhập không thành công: \(tail)", "Login failed: \(tail)"), kind: .error)
                     }
                 }
                 do {
                     try login.start(claude: claude, email: email)
                 } catch {
-                    return self.announce("Không chạy được claude auth login: \(error.localizedDescription)", kind: .error)
+                    return self.announce(L("Không chạy được claude auth login: \(error.localizedDescription)", "Couldn't run claude auth login: \(error.localizedDescription)"), kind: .error)
                 }
                 self.loginProcess = login
                 self.addingSince = Date()
@@ -689,15 +694,15 @@ final class AccountStore {
             LoginBrowser.openPrivate(url, in: app)
         case .copyOnly:
             LoginBrowser.copy(url)
-            announce("Đã copy link đăng nhập. Dán vào trình duyệt bạn muốn.", kind: .info)
+            announce(L("Đã copy link đăng nhập. Dán vào trình duyệt bạn muốn.", "Sign-in link copied. Paste it into the browser you want."), kind: .info)
         }
     }
 
     /// Sends the code a sign-in page showed back to the waiting `claude auth login`.
     func submitLoginCode(_ code: String) {
-        guard let loginProcess else { return announce("Không còn phiên đăng nhập nào đang chờ. Bấm Thêm tài khoản lại.", kind: .error) }
+        guard let loginProcess else { return announce(L("Không còn phiên đăng nhập nào đang chờ. Bấm Thêm tài khoản lại.", "No login is waiting any more. Click Add account again."), kind: .error) }
         loginProcess.submitCode(code)
-        announce("Đã gửi mã. App sẽ nhận tài khoản sau vài giây.", kind: .info)
+        announce(L("Đã gửi mã. App sẽ nhận tài khoản sau vài giây.", "Code sent. The app will pick up the account in a few seconds."), kind: .info)
     }
 
     /// The user gave up: stop the login process too.
@@ -756,30 +761,31 @@ final class AccountStore {
             setupTokens[id] = recovered
             update(id) { $0.setupTokenAddedAt = Date() }
             save()
-            announce("Đã khôi phục token dự phòng đã dán cho \(acc.email).", kind: .success)
+            announce(L("Đã khôi phục token dự phòng đã dán cho \(acc.email).", "Recovered the pasted backup token for \(acc.email)."), kind: .success)
         }
     }
 
     func createSetupToken() {
-        guard let claude = Self.claudePath else { return announce("Không tìm thấy lệnh claude", kind: .error) }
+        guard let claude = Self.claudePath else { return announce(L("Không tìm thấy lệnh claude", "claude command not found"), kind: .error) }
         openInTerminal("setup-token", "'\(claude)' setup-token")
     }
 
     func saveSetupToken(_ token: String, for id: String) async -> Bool {
         guard let t = Self.cleanSetupToken(token) else {
-            announce("Đây không phải token của claude setup-token. Token bắt đầu bằng sk-ant-oat01-, chỉ gồm chữ, số, - và _.", kind: .error)
+            announce(L("Đây không phải token của claude setup-token. Token bắt đầu bằng sk-ant-oat01-, chỉ gồm chữ, số, - và _.", "That isn't a claude setup-token token. It starts with sk-ant-oat01- and has only letters, digits, - and _."), kind: .error)
             return false
         }
         return await serial {
             guard await io({ Keychain.saveSetupToken(id, t) }) else {
-                self.announce("Không lưu được token vào Keychain", kind: .error)
+                self.announce(L("Không lưu được token vào Keychain", "Couldn't save the token to the Keychain"), kind: .error)
                 return false
             }
             self.setupTokens[id] = t
             self.update(id) { $0.setupTokenAddedAt = Date() }
             if id == self.state.activeId, let acc = self.account(id) { try? await self.applyEnvMode(for: acc) }
             self.save()
-            self.announce("Đã lưu token dự phòng cho \(self.account(id)?.email ?? "")", kind: .success)
+            let email = self.account(id)?.email ?? ""
+            self.announce(L("Đã lưu token dự phòng cho \(email)", "Saved the backup token for \(email)"), kind: .success)
             return true
         }
     }
@@ -834,7 +840,7 @@ final class AccountStore {
         do {
             if on { try SMAppService.mainApp.register() } else { try SMAppService.mainApp.unregister() }
         } catch {
-            announce("Không đổi được mở cùng macOS: \(error.localizedDescription)", kind: .error)
+            announce(L("Không đổi được mở cùng macOS: \(error.localizedDescription)", "Couldn't change Open at login: \(error.localizedDescription)"), kind: .error)
         }
         launchAtLogin = SMAppService.mainApp.status == .enabled
     }
@@ -844,18 +850,18 @@ final class AccountStore {
     /// One plain-language line per account, the same in the menu and the window.
     func health(_ acc: Account) -> (level: HealthLevel, text: String) {
         let usingBackup = acc.id == state.activeId && state.activeUsesSetupToken
-        if usingBackup && acc.loginUsable { return (.backup, "Đang dùng token dự phòng") }
+        if usingBackup && acc.loginUsable { return (.backup, L("Đang dùng token dự phòng", "Using the backup token")) }
         if !acc.loginUsable {
             return acc.hasSetupToken
-                ? (.backup, "Login hết hạn · đang có token dự phòng")
-                : (.expired, "Hết hạn · cần đăng nhập lại")
+                ? (.backup, L("Login hết hạn · đang có token dự phòng", "Login expired · backup token in place"))
+                : (.expired, L("Hết hạn · cần đăng nhập lại", "Expired · log in again"))
         }
-        guard let exp = acc.refreshTokenExpiresAt else { return (.good, "Đăng nhập tốt") }
+        guard let exp = acc.refreshTokenExpiresAt else { return (.good, L("Đăng nhập tốt", "Logged in")) }
         let days = max(exp.daysFromNow, 0)
         if exp.timeIntervalSinceNow < Self.keepAliveWindow {
-            return (.soon, acc.hasSetupToken ? "Còn \(days) ngày · có token dự phòng" : "Còn \(days) ngày · nên đăng nhập lại")
+            return (.soon, acc.hasSetupToken ? L("Còn \(days) ngày · có token dự phòng", "\(days) days left · backup token ready") : L("Còn \(days) ngày · nên đăng nhập lại", "\(days) days left · log in again soon"))
         }
-        return (.good, "Đăng nhập tốt · còn \(days) ngày")
+        return (.good, L("Đăng nhập tốt · còn \(days) ngày", "Logged in · \(days) days left"))
     }
 
     // MARK: Helpers
@@ -878,7 +884,8 @@ final class AccountStore {
 
     private func openInTerminal(_ name: String, _ command: String) {
         let url = dir.appendingPathComponent("\(name).command")
-        let script = "#!/bin/zsh\nclear\n\(command)\necho\necho 'Xong. Có thể đóng cửa sổ này.'\n"
+        let done = L("Xong. Có thể đóng cửa sổ này.", "Done. You can close this window.")
+        let script = "#!/bin/zsh\nclear\n\(command)\necho\necho '\(done)'\n"
         try? script.write(to: url, atomically: true, encoding: .utf8)
         chmod(url.path, 0o755)
         NSWorkspace.shared.open(url)
@@ -896,6 +903,11 @@ final class AccountStore {
     }
 
     func dismissBanner() { banner = nil }
+
+    func setLanguage(_ lang: AppLanguage) {
+        L10n.set(lang)
+        if language != lang { language = lang }
+    }
 
     func dismissRenewNote(_ id: String) { renewNotes[id] = nil }
 
@@ -947,16 +959,16 @@ enum Fmt {
     /// "hôm nay 16:59", "mai 22:59", "26/10 08:00".
     static func reset(_ d: Date) -> String {
         let cal = Calendar.current
-        if cal.isDateInToday(d) { return "hôm nay \(time.string(from: d))" }
-        if cal.isDateInTomorrow(d) { return "mai \(time.string(from: d))" }
+        if cal.isDateInToday(d) { return L("hôm nay \(time.string(from: d))", "today \(time.string(from: d))") }
+        if cal.isDateInTomorrow(d) { return L("mai \(time.string(from: d))", "tomorrow \(time.string(from: d))") }
         return dayTime.string(from: d)
     }
 
     static func ago(_ d: Date, now: Date = Date()) -> String {
         let s = now.timeIntervalSince(d)
-        if s < 60 { return "vừa xong" }
-        if s < 3600 { return "\(Int(s / 60)) phút trước" }
-        if s < 86400 { return "\(Int(s / 3600)) giờ trước" }
+        if s < 60 { return L("vừa xong", "just now") }
+        if s < 3600 { return L("\(Int(s / 60)) phút trước", "\(Int(s / 60)) min ago") }
+        if s < 86400 { return L("\(Int(s / 3600)) giờ trước", "\(Int(s / 3600)) h ago") }
         return date(d)
     }
 }
