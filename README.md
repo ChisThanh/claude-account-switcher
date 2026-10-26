@@ -1,65 +1,119 @@
-# Claude Switcher
+# Claude Account Switcher
 
-App trên thanh menu macOS để giữ nhiều tài khoản Claude Code và chuyển qua lại giữa chúng.
+**A native macOS menu bar app for switching between multiple Claude Code accounts.** It shows the usage limits of every account and renews every login once a day.
 
-## Cài đặt
+![macOS 15+](https://img.shields.io/badge/macOS-15%2B-black?logo=apple)
+![Swift 6](https://img.shields.io/badge/Swift-6-F05138?logo=swift&logoColor=white)
+![SwiftUI](https://img.shields.io/badge/UI-SwiftUI-0A84FF)
+![License: MIT](https://img.shields.io/badge/License-MIT-green)
+
+[Tiếng Việt](README.vi.md)
+
+<p align="center">
+  <img src="docs/images/menu-panel.png" alt="Claude Account Switcher menu bar panel showing the account in use, its 5-hour and weekly usage, and other Claude accounts to switch to" width="360">
+  &nbsp;
+  <img src="docs/images/manage-window.png" alt="Claude Account Switcher window listing several Claude Code accounts with login status and usage bars" width="520">
+</p>
+
+## Why
+
+[Claude Code](https://docs.anthropic.com/en/docs/claude-code) keeps a single login per Mac. If you have more than one Claude subscription, such as a work account and a personal one, changing accounts has three problems:
+
+- You have to run `/login` again every time, and sign in through the browser.
+- You can't see which account still has room in its 5-hour and weekly limits.
+- An account you haven't used for a while can be logged out right when you need it.
+
+Claude Account Switcher keeps every account you've logged in to and switches between them in one click. It shows each account's usage, and it renews every login in the background.
+
+## Features
+
+- **One-click account switching** from the menu bar. Your `~/.claude` settings, plugins, MCP servers and memory stay shared across accounts.
+- **Usage for every account:** the 5-hour session, the weekly limit and per-model weekly limits, with reset times. The app reads them with Claude Code's own `/usage`, which uses no messages.
+- **Switch suggestions:** when the account in use passes 80%, the app suggests the account with the most room left.
+- **Daily renewal:** every logged-in account is renewed at least once a day, the one in use included, so its token stays fresh.
+- **Never interrupts running agents:** usage reads and renewals for idle accounts run in an isolated profile, and the live login is never switched behind your back.
+- **1-year backup token:** store a `claude setup-token` for each account. If a regular login expires, the app moves Claude Code onto that token automatically.
+- **Add accounts in a private window:** sign in to a second account in a Brave, Chrome, Edge, Vivaldi, Opera or Firefox private window, without logging out of the claude.ai session in your main browser. No Terminal needed.
+- **Stale-session protection:** if a session that is still running writes an old account's token back, the app saves that token for the right account and puts your choice back.
+- **Light on resources:** about 0.1% CPU when idle. All keychain and file work runs off the main thread.
+- **English and Vietnamese UI**, switchable at runtime.
+
+## How it works
+
+| Piece | What the app does |
+|---|---|
+| **Switching** | Claude Code keeps its login in the keychain item `Claude Code-credentials` and the account in `~/.claude.json` → `oauthAccount`. The app keeps a copy of each account in its own keychain items and writes the chosen one into both places. |
+| **Isolated profiles** | Idle accounts run with `CLAUDE_CONFIG_DIR=~/Library/Application Support/ClaudeSwitcher/profiles/<id>`. Claude Code then uses a separate keychain item, so the live login is never touched. Refreshed tokens are copied back. |
+| **Daily renewal** | Every 24 hours, once the ~8-hour access token has expired, the app runs `/usage` (free), so Claude Code refreshes the token. Only if the tokens didn't change does it send one tiny `haiku` message. A refresh Claude Code already did that day counts. |
+| **Backup token** | A `claude setup-token` token (about 1 year) goes into `~/.claude/settings.json` → `env.CLAUDE_CODE_OAUTH_TOKEN` only while the regular login can't be used, and is removed when it can be used again. |
+| **Usage** | `claude -p /usage --no-session-persistence` for every account. The account in use is read when you open the panel, and every 15 minutes in the background at low priority. |
+| **Sign-in** | `claude auth login` runs in the background with `$BROWSER` pointing at a small script that captures the sign-in link. The link opens where you choose, and the localhost callback finishes the login. |
+
+## Requirements
+
+- macOS 15 Sequoia or later (Apple silicon or Intel)
+- Xcode 16+ / Swift 6 toolchain, to build from source
+- [Claude Code](https://docs.anthropic.com/en/docs/claude-code) installed (`~/.local/bin/claude`, Homebrew or `/usr/local/bin`)
+
+## Install
 
 ```sh
-./scripts/build-app.sh --install   # build, copy vào ~/Applications rồi mở
+git clone https://github.com/ChisThanh/claude-account-switcher.git
+cd claude-account-switcher
+./scripts/build-app.sh --install    # builds, copies to ~/Applications and opens it
 ```
 
-Cần macOS 15 và Xcode (Swift 6). App được ký ad-hoc, không cần Apple Developer ID.
+The app is ad-hoc signed, so it doesn't need an Apple Developer ID. It runs from the menu bar (✦ plus the account name). Opening it again from Finder or Spotlight brings up the window.
 
-## Ngôn ngữ
+## Getting started
 
-App có tiếng Việt (mặc định) và tiếng Anh. Đổi trong menu ⚙ → **Ngôn ngữ** (bản tiếng Anh ghi **Language**). Đổi xong, panel và cửa sổ hiển thị lại ngay. Trong code, mỗi câu được viết song ngữ ngay tại chỗ dùng: `L("tiếng Việt", "English")`.
+1. **Add your accounts.** Click **Add account** and pick **Private window** to sign in to an account other than the one in your main browser. The app picks the account up in a few seconds. Repeat for each account.
+2. **Switch.** Open the ✦ menu and click **Switch** next to an account. New `claude` sessions use it right away. Sessions that were already open keep the old account until you restart them (`/exit`, then `claude`), and the app tells you how many there are.
+3. **Add a backup token (recommended).** Click **Manage… → 1-year backup token → Open Terminal and create a token**, sign in as that account, then save the token. The app picks it up from the clipboard.
+4. **Optional:** turn on **Open at login** in ⚙, and pick the language there too.
 
-## Cách hoạt động
+## FAQ
 
-Claude Code lưu login ở hai chỗ:
+**Will my logins never expire?**
+Tokens are refreshed every day. But on 23 Oct 2026 a refresh did **not** extend the login's own expiry, which is about 30 days after signing in. So for an account to keep working with no gaps, give it a backup token or log in again before the end. The app warns you 5 days ahead.
 
-| Nơi lưu | Nội dung |
-|---|---|
-| Keychain `Claude Code-credentials` | access token, refresh token và hạn của chúng |
-| `~/.claude.json` → `oauthAccount` | email, tổ chức, gói |
+**Does reading usage or renewing use up my limits?**
+`/usage` is a local command, so it uses no model turns. A renewal only sends one tiny `haiku` message when `/usage` didn't refresh the token.
 
-App lưu bản sao của từng tài khoản trong Keychain (dịch vụ `ClaudeSwitcher`, mục `<accountUuid>.login` và `<accountUuid>.setup`). Các thông tin không bí mật nằm ở `~/Library/Application Support/ClaudeSwitcher/state.json`.
+**Does it work with the Claude Code extension in VS Code and JetBrains?**
+Yes. The extension uses the same login. Restart its Claude panel after switching.
 
-- **Chuyển tài khoản:** ghi login của tài khoản được chọn vào `Claude Code-credentials` và `oauthAccount`. Thư mục `~/.claude` (settings, plugin, MCP, memory) vẫn dùng chung, không bị đổi. Các phiên `claude` đang mở cần khởi động lại.
-- **Đồng bộ mỗi 30 giây:**
-  - Claude Code đổi token mới (rotate) thì app lưu lại, để bản sao không bị cũ.
-  - Có login mới qua `claude auth login` thì app tự thêm tài khoản đó.
-  - Một phiên cũ ghi đè lại token của tài khoản khác thì app giữ token đó cho đúng tài khoản rồi đặt lại tài khoản đang chọn.
-- **Token dự phòng:** token tạo bằng `claude setup-token` sống khoảng 1 năm. Khi login của tài khoản đang dùng hết hạn (hoặc bật "Luôn dùng token dự phòng"), app ghi token này vào `~/.claude/settings.json` ở `env.CLAUDE_CODE_OAUTH_TOKEN`. Khi login dùng được lại, app gỡ token ra. Token này có thể không hỗ trợ một số tính năng gắn với claude.ai.
-- **Tự gia hạn hằng ngày:** mọi tài khoản đã đăng nhập, kể cả tài khoản đang dùng, được gia hạn ít nhất 1 lần mỗi 24 giờ để token luôn mới. Lưu ý: ngày 23/10 một lần làm mới token *không* đẩy hạn login (khoảng 30 ngày kể từ lúc đăng nhập) ra xa hơn. Vì vậy khi login còn dưới 5 ngày mà chưa có token dự phòng, app nhắc đăng nhập lại. Gia hạn chỉ chạy khi access token (sống khoảng 8 giờ) đã hết hạn. Lượt nào Claude Code đã tự làm mới trong ngày thì app bỏ qua. Cách làm: chạy `/usage` (miễn phí), nếu token chưa đổi thì gửi `claude -p "Reply with OK" --model haiku`.
+**Where are my tokens stored?**
+In the macOS Keychain, through `/usr/bin/security`, the same tool Claude Code uses. Non-secret state (emails, expiry dates, usage) is in `~/Library/Application Support/ClaudeSwitcher/state.json`. Nothing is sent anywhere except by the `claude` CLI itself.
 
-## Usage
+**Safari private windows?**
+Safari can't be told to open a private window from the command line. Pick **Copy sign-in link only** and paste the link into a private window yourself (⇧⌘N).
 
-App đọc usage bằng `claude -p /usage --no-session-persistence`. Đây là lệnh chạy cục bộ: không tốn lượt chat và không lưu lịch sử phiên.
+## Project structure
 
-- **Tài khoản đang dùng:** khi mở panel hoặc cửa sổ thì đọc lại nếu số liệu cũ hơn 60 giây (mỗi 3 phút khi cửa sổ vẫn mở), và ngay sau khi chuyển tài khoản. Khi chạy ngầm thì 15 phút một lần, ở mức ưu tiên thấp, vì mỗi lần tốn khoảng 6 giây CPU.
-- **Tài khoản khác:** hiện lần đọc gần nhất. Phần nào đã qua giờ reset thì tính về 0%. Nút ↻ đọc lại trong hồ sơ riêng của tài khoản đó (xem dưới). Lần gia hạn hằng ngày cũng đọc luôn usage.
-- **Gợi ý chuyển tài khoản:** khi tài khoản đang dùng đã dùng từ 80% trở lên, panel gợi ý tài khoản còn nhiều hạn mức nhất.
-- Token dự phòng không đọc được usage của gói, vì nó không có quyền đọc hồ sơ tài khoản.
+```
+Sources/ClaudeSwitcher/
+  AccountStore.swift   state, sync with Claude Code, switching, renewal, usage
+  Profile.swift        isolated CLAUDE_CONFIG_DIR profiles for idle accounts
+  Login.swift          background `claude auth login`, private-window browsers
+  Keychain.swift       keychain through /usr/bin/security
+  ClaudeFiles.swift    ~/.claude.json and settings.json edits
+  Usage.swift          `/usage` parsing
+  MenuPanel.swift, ManageView.swift, Components.swift   SwiftUI views
+  L10n.swift           English / Vietnamese strings
+scripts/build-app.sh   builds and installs the .app bundle
+```
 
-## Hồ sơ riêng: không đổi tài khoản đang dùng
+To try the UI without touching real accounts, run `ClaudeSwitcher --demo`. It uses made-up `example.com` accounts and never reads or writes the keychain or Claude's files.
 
-Đọc usage và gia hạn **không bao giờ chuyển login đang dùng**, nên các phiên agent đang chạy không bị gián đoạn.
+## Contributing
 
-- **Tài khoản không dùng:** chạy trong hồ sơ riêng `~/Library/Application Support/ClaudeSwitcher/profiles/<id>/`, bằng `CLAUDE_CONFIG_DIR`. Với biến này, Claude Code dùng mục Keychain riêng `Claude Code-credentials-<8 ký tự hex đầu của sha256(đường dẫn)>`. App chép login mới nhất vào hồ sơ trước khi chạy, và lưu ngược token Claude Code đã đổi sau khi chạy.
-- **Tài khoản đang dùng:** chạy thẳng trên login hiện tại, giống như mở thêm một phiên của chính tài khoản đó. App không bao giờ chạy hồ sơ riêng cho tài khoản này, vì như vậy sẽ đổi refresh token mà các phiên đang mở đang giữ. Trường hợp ngoại lệ: khi tài khoản này đang chạy bằng token dự phòng thì vẫn dùng hồ sơ riêng.
-- Bấm Chuyển sang một tài khoản đúng lúc hồ sơ của nó đang chạy thì app chờ chạy xong rồi mới chuyển, để không mất token vừa đổi.
+Issues and pull requests are welcome. Please keep the app dependency-free (Swift and SwiftUI only), and write every user-facing string in both languages with `L("tiếng Việt", "English")`.
 
-## Thêm tài khoản
+## Disclaimer
 
-1. Bấm **Thêm tài khoản** và chọn cách mở trang đăng nhập:
-   - **Cửa sổ ẩn danh** (Brave, Chrome, Edge, Firefox…): dùng để đăng nhập một tài khoản *khác* với tài khoản claude.ai đang mở trên trình duyệt chính.
-   - **Trình duyệt chính:** dùng tài khoản claude.ai đang đăng nhập sẵn.
-   - **Chỉ copy link:** dán vào trình duyệt nào cũng được. Safari không mở ẩn danh bằng dòng lệnh được, nên với Safari hãy chọn cách này rồi dán vào cửa sổ riêng tư (Cmd+Shift+N).
+This is an independent, unofficial project, not affiliated with or endorsed by Anthropic. "Claude" and "Claude Code" are trademarks of Anthropic. Use it only with accounts you own: sharing an account with other people goes against Anthropic's terms.
 
-   App chạy `claude auth login` ở nền với `BROWSER=/usr/bin/true`, nên Claude Code không tự mở trình duyệt, và đọc link đăng nhập từ output. Không cần Terminal.
-2. Đăng nhập xong, app tự nhận tài khoản sau vài giây. Trong lúc chờ có thể **Mở lại link…** hoặc **Huỷ**.
+## License
 
-3. Trong **Quản lý tài khoản…**, bấm **Mở Terminal: claude setup-token**. Trên trình duyệt chọn đúng tài khoản đó, rồi dán token vào ô **Dán token** và bấm **Lưu**.
-
-Chỉ dùng các tài khoản do chính bạn sở hữu. Dùng chung tài khoản với người khác là trái điều khoản của Anthropic.
+[MIT](LICENSE)

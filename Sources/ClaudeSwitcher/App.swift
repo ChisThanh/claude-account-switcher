@@ -22,6 +22,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         Task { @MainActor in
             let store = AccountStore.shared
             if CommandLine.arguments.contains("--preview-panel") { return PanelPreview.show() }
+            if AccountStore.isDemo { return ManageWindow.show() }
             // `--renew <email>`: runs the same renewal as the button, for testing.
             let args = CommandLine.arguments
             if let i = args.firstIndex(of: "--renew"), i + 1 < args.count,

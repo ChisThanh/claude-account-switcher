@@ -80,9 +80,17 @@ final class AccountStore {
     @ObservationIgnored private var queueTail: Task<Void, Never>?
     @ObservationIgnored private var timer: Timer?
 
+    /// `--demo`: made-up accounts for screenshots. Nothing is read from or
+    /// written to the keychain, Claude's files or the app's own state.
+    nonisolated static let isDemo = CommandLine.arguments.contains("--demo")
+
     private init() {
         dir = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
             .appendingPathComponent("ClaudeSwitcher")
+        if Self.isDemo {
+            state = DemoData.state()
+            return
+        }
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         load()
         isFirstLaunch = lastSaved == nil
@@ -136,6 +144,7 @@ final class AccountStore {
     func viewDisappeared() { visibleViews = max(0, visibleViews - 1) }
 
     func tick(force: Bool = false) {
+        if Self.isDemo { return }
         guard !ticking else { return }
         let fast = visibleViews > 0 || addingSince != nil || !staleSessions.isEmpty
         guard force || -lastSync.timeIntervalSinceNow >= (fast ? 2.5 : 15) else { return }
@@ -301,6 +310,7 @@ final class AccountStore {
     // MARK: Switching
 
     func switchTo(_ id: String) {
+        if Self.isDemo { return }
         Task { await serial { await self.switchLocked(id, quiet: false) } }
     }
 
@@ -440,6 +450,7 @@ final class AccountStore {
     }
 
     func refreshLogin(_ id: String) async {
+        if Self.isDemo { return }
         await renew(id, manual: true)
     }
 
@@ -587,6 +598,7 @@ final class AccountStore {
 
     /// The active account's usage when the last read is older than `maxAge`.
     func refreshActiveUsage(maxAge: TimeInterval = 180) {
+        if Self.isDemo { return }
         guard let acc = active, canReadUsage(acc), !usageLoading.contains(acc.id), !renewingIds.contains(acc.id) else { return }
         if let u = acc.usage, -u.fetchedAt.timeIntervalSinceNow < maxAge { return }
         Task { await readUsage(acc.id) }
@@ -594,6 +606,7 @@ final class AccountStore {
 
     /// Any account's usage, without switching anything.
     func refreshUsage(_ id: String) async {
+        if Self.isDemo { return }
         guard let acc = account(id), !usageLoading.contains(id) else { return }
         guard canReadUsage(acc) else {
             return announce(L("\(acc.title): cần login thường còn hạn để đọc usage.", "\(acc.title): needs a valid regular login to read usage."), kind: .warning)
@@ -622,6 +635,7 @@ final class AccountStore {
     }
 
     func refreshAllUsage() async {
+        if Self.isDemo { return }
         await withTaskGroup(of: Void.self) { group in
             for acc in state.accounts where canReadUsage(acc) {
                 group.addTask { await self.refreshUsage(acc.id) }
@@ -646,6 +660,7 @@ final class AccountStore {
     /// way the user picked; with an email the page is pre-filled (logging an
     /// expired account back in).
     func addAccount(email: String? = nil, open mode: LoginOpenMode = .normal) {
+        if Self.isDemo { return }
         guard let claude = Self.claudePath else { return announce(L("Không tìm thấy lệnh claude", "claude command not found"), kind: .error) }
         loginProcess?.cancel()
         Task {
@@ -771,6 +786,7 @@ final class AccountStore {
     }
 
     func saveSetupToken(_ token: String, for id: String) async -> Bool {
+        if Self.isDemo { return false }
         guard let t = Self.cleanSetupToken(token) else {
             announce(L("Đây không phải token của claude setup-token. Token bắt đầu bằng sk-ant-oat01-, chỉ gồm chữ, số, - và _.", "That isn't a claude setup-token token. It starts with sk-ant-oat01- and has only letters, digits, - and _."), kind: .error)
             return false
@@ -791,6 +807,7 @@ final class AccountStore {
     }
 
     func removeSetupToken(_ id: String) {
+        if Self.isDemo { return }
         Task {
             await serial {
                 self.update(id) { $0.setupTokenAddedAt = nil; $0.preferSetupToken = false }
@@ -803,6 +820,7 @@ final class AccountStore {
     }
 
     func setPreferSetupToken(_ on: Bool, for id: String) {
+        if Self.isDemo { return }
         update(id) { $0.preferSetupToken = on }
         save()
         Task {
@@ -823,6 +841,7 @@ final class AccountStore {
     }
 
     func remove(_ id: String) {
+        if Self.isDemo { return }
         guard id != state.activeId else { return }
         savedRaw[id] = nil
         setupTokens[id] = nil
@@ -933,6 +952,7 @@ final class AccountStore {
 
     /// Encodes on the main thread (a few KB) and writes on a serial queue.
     private func save() {
+        if Self.isDemo { return }
         guard state != lastSaved else { return }
         let enc = JSONEncoder()
         enc.dateEncodingStrategy = .iso8601
