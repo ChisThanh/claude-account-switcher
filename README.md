@@ -57,13 +57,25 @@ Claude Account Switcher keeps every account you've logged in to and switches bet
 
 ## Install
 
+### Download
+
+Get the latest `ClaudeSwitcher-<version>.zip` from [Releases](https://github.com/ChisThanh/claude-account-switcher/releases/latest). It is a universal build for Apple silicon and Intel. Unzip it and move `ClaudeSwitcher.app` to `/Applications`.
+
+The app is ad-hoc signed, not notarized by Apple, so macOS blocks it the first time. Allow it in **System Settings → Privacy & Security → Open Anyway**, or run:
+
+```sh
+xattr -dr com.apple.quarantine /Applications/ClaudeSwitcher.app
+```
+
+### Build from source
+
 ```sh
 git clone https://github.com/ChisThanh/claude-account-switcher.git
 cd claude-account-switcher
 ./scripts/build-app.sh --install    # builds, copies to ~/Applications and opens it
 ```
 
-The app is ad-hoc signed, so it doesn't need an Apple Developer ID. It runs from the menu bar (✦ plus the account name). Opening it again from Finder or Spotlight brings up the window.
+Building needs no Apple Developer ID. The app runs from the menu bar (✦ plus the account name). Opening it again from Finder or Spotlight brings up the window.
 
 ## Getting started
 
@@ -101,7 +113,8 @@ Sources/ClaudeSwitcher/
   Usage.swift          `/usage` parsing
   MenuPanel.swift, ManageView.swift, Components.swift   SwiftUI views
   L10n.swift           English / Vietnamese strings
-scripts/build-app.sh   builds and installs the .app bundle
+scripts/build-app.sh   builds the .app (--install, --universal, --version, --zip)
+.github/workflows/     pushing a v* tag builds and publishes a release
 ```
 
 To try the UI without touching real accounts, run `ClaudeSwitcher --demo`. It uses made-up `example.com` accounts and never reads or writes the keychain or Claude's files.

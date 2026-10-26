@@ -53,13 +53,25 @@ App giữ mọi tài khoản bạn đã đăng nhập và chuyển giữa chúng
 
 ## Cài đặt
 
+### Tải bản cài sẵn
+
+Tải file `ClaudeSwitcher-<phiên bản>.zip` mới nhất ở [Releases](https://github.com/ChisThanh/claude-account-switcher/releases/latest). File chạy được trên cả Apple Silicon lẫn Intel. Giải nén rồi kéo `ClaudeSwitcher.app` vào thư mục Applications.
+
+App chỉ được ký ad-hoc, không được Apple công chứng, nên lần mở đầu tiên macOS sẽ chặn. Mở **Cài đặt hệ thống → Quyền riêng tư & Bảo mật → Vẫn mở**, hoặc chạy:
+
+```sh
+xattr -dr com.apple.quarantine /Applications/ClaudeSwitcher.app
+```
+
+### Build từ mã nguồn
+
 ```sh
 git clone https://github.com/ChisThanh/claude-account-switcher.git
 cd claude-account-switcher
 ./scripts/build-app.sh --install    # build, copy vào ~/Applications rồi mở
 ```
 
-App được ký ad-hoc, không cần Apple Developer ID. App chạy trên thanh menu (✦ kèm tên tài khoản). Mở lại app từ Finder hoặc Spotlight thì cửa sổ quản lý hiện lên.
+Build không cần Apple Developer ID. App chạy trên thanh menu (✦ kèm tên tài khoản). Mở lại app từ Finder hoặc Spotlight thì cửa sổ quản lý hiện lên.
 
 ## Bắt đầu
 
@@ -101,7 +113,8 @@ Sources/ClaudeSwitcher/
   Usage.swift          đọc kết quả `/usage`
   MenuPanel.swift, ManageView.swift, Components.swift   giao diện SwiftUI
   L10n.swift           chuỗi tiếng Việt / tiếng Anh
-scripts/build-app.sh   build và cài file .app
+scripts/build-app.sh   build file .app (--install, --universal, --version, --zip)
+.github/workflows/     push tag v* là tự build và đăng bản phát hành
 ```
 
 Muốn xem thử giao diện mà không đụng tới tài khoản thật thì chạy `ClaudeSwitcher --demo`. Chế độ này dùng các tài khoản giả `example.com`, không đọc hay ghi gì vào Keychain hay file của Claude.

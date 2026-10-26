@@ -1,0 +1,44 @@
+# Pushing a tag like v1.2.3 builds a universal (Apple silicon + Intel) app,
+# zips it and publishes it as a GitHub Release with the built-in token.
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Toolchain
+        run: swift --version
+
+      - name: Build
+        run: ./scripts/build-app.sh --universal --version "${GITHUB_REF_NAME#v}" --zip
+
+      - name: Release notes
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          cp .github/release-notes.md build/notes.md
+          {
+            echo
+            echo "**SHA-256** \`ClaudeSwitcher-$VERSION.zip\`:"
+            echo
+            echo '```'
+            shasum -a 256 "build/ClaudeSwitcher-$VERSION.zip" | cut -d' ' -f1
+            echo '```'
+          } >> build/notes.md
+
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          gh release create "$GITHUB_REF_NAME" "build/ClaudeSwitcher-$VERSION.zip" \
+            --title "Claude Account Switcher $GITHUB_REF_NAME" \
+            --notes-file build/notes.md
