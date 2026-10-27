@@ -85,7 +85,7 @@ struct BannerView: View {
     }
 }
 
-/// "N phiên claude vẫn chạy tài khoản cũ" after a switch.
+/// After a switch, tells how many open claude sessions still run on the previous account.
 struct RestartHint: View {
     let count: Int
 
@@ -180,7 +180,7 @@ struct LoginModeItems: View {
     }
 }
 
-/// "Thêm tài khoản" / "Đăng nhập lại" as a pull-down of the open modes.
+/// The "Add account" / "Log in again" control: a pull-down listing the ways to open the sign-in page.
 struct AddAccountMenu<MenuLabel: View>: View {
     @Environment(AccountStore.self) private var store
     var email: String? = nil
@@ -226,7 +226,7 @@ struct UsageDetail: View {
     let account: Account
 
     var body: some View {
-        // Minute ticks keep "x phút trước" and passed resets current without a store change.
+        // Re-render once a minute so relative times ("5 min ago") and elapsed reset windows stay accurate without a store change.
         TimelineView(.everyMinute) { _ in content }
     }
 
@@ -285,13 +285,13 @@ struct UsageFooter: View {
     }
 }
 
-/// "Phiên ▮▮▯ 19% · Tuần ▮▮▮ 75%" for list rows.
+/// One-line session and weekly usage bars for list rows, e.g. "Session ▮▮▯ 19%  Week ▮▮▮ 75%".
 struct UsageCompact: View {
     @Environment(AccountStore.self) private var store
     let account: Account
 
     var body: some View {
-        // Minute ticks keep "x phút trước" and passed resets current without a store change.
+        // Re-render once a minute so relative times ("5 min ago") and elapsed reset windows stay accurate without a store change.
         TimelineView(.everyMinute) { _ in content }
     }
 

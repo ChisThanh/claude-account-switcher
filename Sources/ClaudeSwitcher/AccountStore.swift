@@ -976,7 +976,7 @@ enum Fmt {
         return full.string(from: d)
     }
 
-    /// "hôm nay 16:59", "mai 22:59", "26/10 08:00".
+    /// A reset time relative to today: "today 16:59", "tomorrow 22:59", otherwise "26/10 08:00".
     static func reset(_ d: Date) -> String {
         let cal = Calendar.current
         if cal.isDateInToday(d) { return L("hôm nay \(time.string(from: d))", "today \(time.string(from: d))") }

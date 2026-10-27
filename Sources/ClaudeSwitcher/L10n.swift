@@ -7,7 +7,7 @@ enum AppLanguage: String, CaseIterable, Identifiable {
     var name: String { self == .vi ? "Tiếng Việt" : "English" }
 }
 
-/// Two languages, side by side in code: `L("tiếng Việt", "English")`. The choice
+/// Two languages, side by side in code: `L(vietnamese, english)`. The choice
 /// is saved in UserDefaults; until one is picked the app is in Vietnamese.
 enum L10n {
     private static let key = "language"
